@@ -5,53 +5,112 @@ import { auth } from "../firebase"
 import LegForm from "./LegForm"
 import LegList from "./LegList"
 import ResultsTable from "./ResultsTable"
+import ViewInput from "./ViewInput"
+import StrategyProposal from "./StrategyProposal"
 
 export default function AppPage() {
   const navigate = useNavigate()
+  const [mode, setMode] = useState("ai") // "ai" | "manual"
+
+  // AI flow
+  const [aiIdentifying, setAiIdentifying] = useState(false)
+  const [aiProposal, setAiProposal] = useState(null)
+
+  // Manual flow
   const [legs, setLegs] = useState([])
-  const [sortBy, setSortBy] = useState("ask")
   const [sameExpiry, setSameExpiry] = useState(false)
+
+  // Shared
+  const [sortBy, setSortBy] = useState("ask")
   const [results, setResults] = useState(null)
-  const [loading, setLoading] = useState(false)
+  const [searching, setSearching] = useState(false)
   const [error, setError] = useState("")
 
   const addLeg = (leg) => setLegs((prev) => [...prev, leg])
   const removeLeg = (i) => setLegs((prev) => prev.filter((_, idx) => idx !== i))
 
-  const handleSearch = async () => {
-    setError("")
-    setLoading(true)
-    try {
-      let token = null
-      if (auth.currentUser) {
-        token = await auth.currentUser.getIdToken()
-      }
+  const getToken = async () => {
+    if (!auth.currentUser) return null
+    return await auth.currentUser.getIdToken()
+  }
 
+  const handleIdentifyStrategy = async (view) => {
+    setError("")
+    setAiIdentifying(true)
+    try {
+      const res = await fetch("/api/strategy/identify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ view }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || "Failed to identify strategy")
+      setAiProposal(data)
+      setResults(null)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setAiIdentifying(false)
+    }
+  }
+
+  const handleConfirmProposal = async () => {
+    if (!aiProposal) return
+    const searchLegs = aiProposal.legs.map((leg) => ({
+      ticker: aiProposal.ticker,
+      option_type: leg.option_type,
+      side: leg.side,
+      expiry_from: leg.expiry_from,
+      expiry_to: leg.expiry_to,
+      strike_min: leg.strike_hint != null ? Math.round(leg.strike_hint * 0.90) : null,
+      strike_max: leg.strike_hint != null ? Math.round(leg.strike_hint * 1.10) : null,
+    }))
+    await runSearch(searchLegs, aiProposal.same_expiry)
+  }
+
+  const handleManualSearch = async () => {
+    await runSearch(legs, sameExpiry)
+  }
+
+  const runSearch = async (searchLegs, useSameExpiry) => {
+    setError("")
+    setSearching(true)
+    setResults(null)
+    try {
+      const token = await getToken()
       const res = await fetch("/api/search", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ legs, sort_by: sortBy, same_expiry: sameExpiry }),
+        body: JSON.stringify({ legs: searchLegs, sort_by: sortBy, same_expiry: useSameExpiry }),
       })
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || `Server error ${res.status}`)
-      }
-
-      setResults(await res.json())
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || `Server error ${res.status}`)
+      setResults(data)
     } catch (e) {
       setError(e.message)
     } finally {
-      setLoading(false)
+      setSearching(false)
     }
+  }
+
+  const handleEditManually = () => {
+    setMode("manual")
+    setResults(null)
+    setError("")
   }
 
   const handleLogout = async () => {
     await signOut(auth)
     navigate("/")
+  }
+
+  const switchMode = (newMode) => {
+    setMode(newMode)
+    setResults(null)
+    setError("")
   }
 
   return (
@@ -80,25 +139,62 @@ export default function AppPage() {
       </nav>
 
       <main className="max-w-5xl mx-auto px-6 pt-28 pb-16 flex flex-col gap-5">
-        <div className="mb-2">
-          <h1 className="text-2xl font-bold text-white">Strategy Builder</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Add legs, set your sort metric, and surface the cheapest matching contracts from live Yahoo Finance data.
-          </p>
+        <div className="flex items-start justify-between gap-4 mb-2">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Strategy Builder</h1>
+            <p className="text-sm text-gray-500 mt-1">
+              Describe your market view or build legs manually to find the cheapest matching contracts.
+            </p>
+          </div>
+          <div className="flex items-center bg-white/[0.03] border border-white/10 rounded-xl p-1 shrink-0">
+            {[
+              { key: "ai", label: "Smart" },
+              { key: "manual", label: "Manual" },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => switchMode(key)}
+                className={`px-4 py-1.5 rounded-lg text-xs font-medium transition ${
+                  mode === key
+                    ? "bg-indigo-600 text-white shadow"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <LegForm onAdd={addLeg} />
-
-        <LegList
-          legs={legs}
-          onRemove={removeLeg}
-          sortBy={sortBy}
-          onSortByChange={(v) => { setSortBy(v); setResults(null) }}
-          sameExpiry={sameExpiry}
-          onSameExpiryChange={(v) => { setSameExpiry(v); setResults(null) }}
-          onSearch={handleSearch}
-          loading={loading}
-        />
+        {mode === "ai" ? (
+          <>
+            {!aiProposal ? (
+              <ViewInput onSubmit={handleIdentifyStrategy} loading={aiIdentifying} />
+            ) : (
+              <StrategyProposal
+                proposal={aiProposal}
+                onConfirm={handleConfirmProposal}
+                onEditManually={handleEditManually}
+                onReset={() => { setAiProposal(null); setResults(null); setError("") }}
+                loading={searching}
+              />
+            )}
+          </>
+        ) : (
+          <>
+            <LegForm onAdd={addLeg} />
+            <LegList
+              legs={legs}
+              onRemove={removeLeg}
+              sortBy={sortBy}
+              onSortByChange={(v) => { setSortBy(v); setResults(null) }}
+              sameExpiry={sameExpiry}
+              onSameExpiryChange={(v) => { setSameExpiry(v); setResults(null) }}
+              onSearch={handleManualSearch}
+              loading={searching}
+            />
+          </>
+        )}
 
         {error && (
           <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-sm px-4 py-3 rounded-xl">

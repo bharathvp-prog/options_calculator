@@ -3,7 +3,7 @@ import { Navigate } from "react-router-dom"
 import { onAuthStateChanged } from "firebase/auth"
 import { auth } from "../firebase"
 
-const DEV_BYPASS = true // TODO: remove before deploying — set to false once Firebase is configured
+const DEV_BYPASS = false
 
 export default function ProtectedRoute({ children }) {
   const [user, setUser] = useState(undefined) // undefined = loading

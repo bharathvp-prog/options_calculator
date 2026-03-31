@@ -5,7 +5,12 @@ from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from services.options import get_expiry_dates, get_option_chain, find_cheapest
+import yfinance as yf
+from datetime import date
+from services.options import get_expiry_dates, get_option_chain, find_cheapest, pick_horizon_expiries, get_options_for_expiry
+from services.tickers import load_tickers, search_tickers
+from services.strategy import identify_strategy
+from services.payoff import OptionLeg, compute_payoff_table
 
 load_dotenv()
 
@@ -22,6 +27,12 @@ else:
     )
 
 app = FastAPI(title="Options Calculator API")
+
+@app.on_event("startup")
+async def startup_event():
+    # Load tickers in a background thread so startup isn't blocked
+    import threading
+    threading.Thread(target=load_tickers, daemon=True).start()
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,7 +74,188 @@ class SearchRequest(BaseModel):
     same_expiry: bool = False
 
 
+class StrategyRequest(BaseModel):
+    view: str
+
+
+class StrategyCompareLeg(BaseModel):
+    option_type: str  # "call" or "put"
+    side: str         # "buy" or "sell"
+    strike_hint: float | None = None
+    qty: int = 1      # number of contracts
+
+
+class StrategyCompareRequest(BaseModel):
+    ticker: str
+    legs: list[StrategyCompareLeg]
+    sort_by: str = "ask"
+
+
 # ── Routes ──────────────────────────────────────────────────────────────────
+
+@app.post("/api/strategy/identify")
+def strategy_identify(payload: StrategyRequest):
+    if not payload.view.strip():
+        raise HTTPException(status_code=400, detail="View cannot be empty")
+    result = identify_strategy(payload.view)
+    if "error" in result:
+        raise HTTPException(status_code=422, detail=result["error"])
+    
+    # Try fetching the current stock price
+    try:
+        t_obj = yf.Ticker(result["ticker"])
+        cp = None
+        try:
+            cp = getattr(t_obj.fast_info, "last_price", None)
+        except Exception:
+            pass
+            
+        if cp is None or str(cp).lower() == "nan":
+            df_hist = t_obj.history(period="1d")
+            if not df_hist.empty:
+                cp = df_hist["Close"].iloc[-1]
+                
+        if cp is not None:
+            result["current_price"] = float(cp)
+        else:
+            result["current_price"] = None
+    except Exception as e:
+        print(f"Could not fetch current price for {result.get('ticker')}: {e}")
+        result["current_price"] = None
+
+    return result
+
+
+@app.post("/api/strategy/compare")
+def strategy_compare(payload: StrategyCompareRequest, authorization: str = Header(default=None)):
+    verify_token(authorization)
+
+    ticker_obj = yf.Ticker(payload.ticker.upper())
+    try:
+        all_expiries = list(ticker_obj.options)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not fetch options for {payload.ticker}: {e}")
+
+    horizons = pick_horizon_expiries(all_expiries)
+    today_date = date.today()
+    results = []
+
+    for label, expiry in horizons.items():
+        dte = (date.fromisoformat(expiry) - today_date).days
+        leg_results = []
+        total_cost = 0.0
+        valid = True
+
+        for leg in payload.legs:
+            try:
+                # Get the whole chain for this expiry and match the closest strike
+                df = get_options_for_expiry(ticker_obj, expiry, leg.option_type, None, None)
+                if df.empty:
+                    valid = False
+                    break
+
+                target_strike = leg.strike_hint
+                if target_strike is None:
+                    # Default to At-The-Money (ATM) if no hint provided
+                    try:
+                        target_strike = ticker_obj.fast_info.get("lastPrice")
+                    except Exception:
+                        target_strike = None
+                    if target_strike is None:
+                        try:
+                            target_strike = ticker_obj.history(period="1d")["Close"].iloc[-1]
+                        except Exception:
+                            target_strike = df["strike"].median() # Safe fallback
+
+                df["strike_diff"] = (df["strike"] - target_strike).abs()
+                best_row = df.loc[df["strike_diff"].idxmin()].to_dict()
+
+                def safe_val(val, default_val, cast_type):
+                    try:
+                        if val is None or str(val).lower() == "nan": return default_val
+                        return cast_type(val)
+                    except Exception:
+                        return default_val
+
+                cheapest = {
+                    "contractSymbol": safe_val(best_row.get("contractSymbol"), "", str),
+                    "expiration": safe_val(best_row.get("expiration"), expiry, str),
+                    "strike": safe_val(best_row.get("strike"), 0.0, float),
+                    "option_type": safe_val(best_row.get("option_type"), leg.option_type, str),
+                    "bid": safe_val(best_row.get("bid"), 0.0, float),
+                    "ask": safe_val(best_row.get("ask"), 0.0, float),
+                    "mid": safe_val(best_row.get("mid"), 0.0, float),
+                    "spread": safe_val(best_row.get("spread"), 0.0, float),
+                    "lastPrice": safe_val(best_row.get("lastPrice"), 0.0, float),
+                    "volume": safe_val(best_row.get("volume"), 0, int),
+                    "openInterest": safe_val(best_row.get("openInterest"), 0, int),
+                    "impliedVolatility": safe_val(best_row.get("impliedVolatility"), 0.0, float),
+                }
+            except Exception as e:
+                print(f"Error fetching leg for {payload.ticker} {expiry}: {e}")
+                cheapest = None
+
+            if cheapest is None:
+                valid = False
+                break
+
+            leg_results.append({**cheapest, "side": leg.side, "qty": leg.qty})
+            price = cheapest["ask"] if leg.side == "buy" else cheapest["bid"]
+            total_cost += price * leg.qty if leg.side == "buy" else -price * leg.qty
+
+        if not valid:
+            continue
+
+        net_debit = round(total_cost, 4)
+        net_cost_dollars = round(net_debit * 100, 2)
+        cost_per_day = round(net_cost_dollars / dte, 4) if dte > 0 and net_cost_dollars > 0 else None
+
+        payoff_legs = [
+            OptionLeg(
+                option_type=pl.option_type,
+                side=pl.side,
+                strike=lr["strike"],
+                qty=pl.qty,
+            )
+            for pl, lr in zip(payload.legs, leg_results)
+        ]
+        payoff = compute_payoff_table(payoff_legs, net_cost_dollars)
+        payoff_at = payoff["payoff_at"]
+        max_profit = payoff["max_profit"]
+        max_loss = payoff["max_loss"]
+        max_roi = payoff["max_roi"]
+        breakevens = payoff["breakevens"]
+
+        results.append({
+            "label": label,
+            "expiry": expiry,
+            "dte": dte,
+            "legs": leg_results,
+            "net_debit": net_debit,
+            "net_cost_dollars": net_cost_dollars,
+            "cost_per_day": cost_per_day,
+            "max_profit": round(max_profit, 2) if max_profit is not None else None,
+            "max_loss": round(max_loss, 2) if max_loss is not None else None,
+            "max_roi": max_roi,
+            "breakevens": breakevens,
+            "payoff_at": payoff_at,
+        })
+
+    if not results:
+        raise HTTPException(status_code=404, detail="No options found for any time horizon")
+
+    valid_cpd = [r for r in results if r.get("cost_per_day") and r["cost_per_day"] > 0]
+    best_expiry = min(valid_cpd, key=lambda r: r["cost_per_day"])["expiry"] if valid_cpd else None
+    for r in results:
+        r["best_value"] = (r["expiry"] == best_expiry)
+
+    return {"ticker": payload.ticker.upper(), "horizons": results}
+
+
+@app.get("/api/tickers/search")
+def ticker_search(q: str = Query(default="", min_length=0)):
+    return {"results": search_tickers(q, limit=10)}
+
 
 @app.get("/api/options/expiries")
 def get_expiries(ticker: str = Query(..., description="Stock ticker symbol")):

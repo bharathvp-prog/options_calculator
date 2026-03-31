@@ -1,6 +1,66 @@
 import yfinance as yf
 import pandas as pd
-from datetime import date
+from datetime import date, timedelta
+
+HORIZON_TARGETS = [
+    ("1 month", 30),
+    ("3 months", 90),
+    ("6 months", 180),
+    ("1 year", 365),
+    ("2 years", 730),
+]
+
+
+def pick_horizon_expiries(all_expiries: list[str]) -> dict[str, str]:
+    """Pick one representative expiry per time horizon bucket. Returns {label: expiry}."""
+    today = date.today()
+    valid = [e for e in all_expiries if (date.fromisoformat(e) - today).days >= 7]
+    if not valid:
+        return {}
+
+    result = {}
+    for label, target_days in HORIZON_TARGETS:
+        target = today + timedelta(days=target_days)
+        closest = min(valid, key=lambda e: abs((date.fromisoformat(e) - target).days))
+        result[label] = closest
+
+    latest = max(valid, key=lambda e: date.fromisoformat(e))
+    result["Latest available"] = latest
+
+    # Deduplicate — keep first occurrence of each expiry
+    seen: set[str] = set()
+    deduped = {}
+    for label, expiry in result.items():
+        if expiry not in seen:
+            seen.add(expiry)
+            deduped[label] = expiry
+    return deduped
+
+
+def get_options_for_expiry(
+    ticker_obj,
+    expiry: str,
+    option_type: str,
+    strike_min: float | None = None,
+    strike_max: float | None = None,
+) -> pd.DataFrame:
+    """Fetch and filter option chain for one specific expiry date."""
+    chain = ticker_obj.option_chain(expiry)
+    df = (chain.calls if option_type == "call" else chain.puts).copy()
+    df["expiration"] = expiry
+    df["option_type"] = option_type
+
+    if strike_min is not None:
+        df = df[df["strike"] >= strike_min]
+    if strike_max is not None:
+        df = df[df["strike"] <= strike_max]
+
+    if df.empty:
+        return df
+
+    df["mid"] = (df["bid"] + df["ask"]) / 2
+    df["spread"] = df["ask"] - df["bid"]
+    return df.reset_index(drop=True)
 
 
 def get_expiry_dates(ticker: str) -> list[str]:

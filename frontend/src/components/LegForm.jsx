@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 
 const defaultLeg = {
   ticker: "",
@@ -12,29 +12,66 @@ const defaultLeg = {
 
 export default function LegForm({ onAdd }) {
   const [leg, setLeg] = useState(defaultLeg)
-  const [tickerStatus, setTickerStatus] = useState("idle") // idle | loading | valid | invalid
-  const [expiries, setExpiries] = useState([]) // available expiry dates from Yahoo
+  const [query, setQuery] = useState("")           // raw input text
+  const [suggestions, setSuggestions] = useState([])
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [expiries, setExpiries] = useState([])
+  const [expiryStatus, setExpiryStatus] = useState("idle") // idle | loading | done | error
+  const debounceRef = useRef(null)
+  const dropdownRef = useRef(null)
 
   const set = (field, value) => setLeg((prev) => ({ ...prev, [field]: value }))
 
-  const handleTickerBlur = async () => {
-    if (!leg.ticker) return
-    setTickerStatus("loading")
+  // Debounced ticker search
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (!query) { setSuggestions([]); return }
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/tickers/search?q=${encodeURIComponent(query)}`)
+        const data = await res.json()
+        setSuggestions(data.results || [])
+        setShowDropdown(true)
+      } catch {
+        setSuggestions([])
+      }
+    }, 200)
+    return () => clearTimeout(debounceRef.current)
+  }, [query])
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setShowDropdown(false)
+      }
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [])
+
+  const selectTicker = async (symbol) => {
+    setQuery(symbol)
+    set("ticker", symbol)
+    setSuggestions([])
+    setShowDropdown(false)
+    // Fetch expiries immediately on selection
+    setExpiryStatus("loading")
     try {
-      const res = await fetch(`/api/options/expiries?ticker=${leg.ticker.toUpperCase()}`)
+      const res = await fetch(`/api/options/expiries?ticker=${symbol}`)
       if (!res.ok) throw new Error()
       const data = await res.json()
       if (!data.expiries?.length) throw new Error()
       setExpiries(data.expiries)
-      setTickerStatus("valid")
-      // Auto-fill expiry range with first and last available date
+      setExpiryStatus("done")
       setLeg((prev) => ({
         ...prev,
-        expiry_from: prev.expiry_from || data.expiries[0],
-        expiry_to: prev.expiry_to || data.expiries[data.expiries.length - 1],
+        ticker: symbol,
+        expiry_from: data.expiries[0],
+        expiry_to: data.expiries[data.expiries.length - 1],
       }))
     } catch {
-      setTickerStatus("invalid")
+      setExpiryStatus("error")
       setExpiries([])
     }
   }
@@ -42,7 +79,6 @@ export default function LegForm({ onAdd }) {
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!leg.ticker || !leg.expiry_from || !leg.expiry_to) return
-    if (tickerStatus === "invalid") return
     onAdd({
       ...leg,
       ticker: leg.ticker.toUpperCase(),
@@ -50,8 +86,9 @@ export default function LegForm({ onAdd }) {
       strike_max: leg.strike_max !== "" ? parseFloat(leg.strike_max) : null,
     })
     setLeg(defaultLeg)
-    setTickerStatus("idle")
+    setQuery("")
     setExpiries([])
+    setExpiryStatus("idle")
   }
 
   const inputClass =
@@ -74,49 +111,64 @@ export default function LegForm({ onAdd }) {
       </h2>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        {/* Ticker */}
-        <div className="col-span-2 md:col-span-1">
+        {/* Ticker with typeahead */}
+        <div className="col-span-2 md:col-span-1" ref={dropdownRef}>
           <label className={labelClass}>Ticker</label>
           <div className="relative">
             <input
               type="text"
-              value={leg.ticker}
+              value={query}
               onChange={(e) => {
-                set("ticker", e.target.value)
-                setTickerStatus("idle")
+                setQuery(e.target.value)
+                set("ticker", "")
                 setExpiries([])
+                setExpiryStatus("idle")
               }}
-              onBlur={handleTickerBlur}
+              onFocus={() => suggestions.length > 0 && setShowDropdown(true)}
               required
-              placeholder="e.g. AAPL"
-              className={
-                inputClass +
-                " uppercase pr-8 " +
-                (tickerStatus === "invalid" ? "border-rose-500/50 focus:ring-rose-500/50" : "")
-              }
+              placeholder="Search ticker…"
+              autoComplete="off"
+              className={inputClass + " uppercase pr-8"}
             />
-            {/* Status indicator */}
-            <div className="absolute right-2.5 top-1/2 -translate-y-1/2">
-              {tickerStatus === "loading" && (
+            {/* Status icon */}
+            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+              {expiryStatus === "loading" && (
                 <span className="w-3.5 h-3.5 border-2 border-gray-500 border-t-indigo-400 rounded-full animate-spin block" />
               )}
-              {tickerStatus === "valid" && (
+              {expiryStatus === "done" && (
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3.5 h-3.5 text-emerald-400">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
                 </svg>
               )}
-              {tickerStatus === "invalid" && (
+              {expiryStatus === "error" && (
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3.5 h-3.5 text-rose-400">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               )}
             </div>
+
+            {/* Dropdown */}
+            {showDropdown && suggestions.length > 0 && (
+              <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-[#1a1a2e] border border-white/10 rounded-xl shadow-2xl shadow-black/50 overflow-hidden">
+                {suggestions.map((s) => (
+                  <button
+                    key={s.symbol}
+                    type="button"
+                    onMouseDown={() => selectTicker(s.symbol)}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 transition text-left"
+                  >
+                    <span className="font-mono font-semibold text-xs text-white w-14 shrink-0">{s.symbol}</span>
+                    <span className="text-xs text-gray-500 truncate">{s.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          {tickerStatus === "invalid" && (
-            <p className="text-xs text-rose-400 mt-1">Ticker not found on Yahoo Finance</p>
-          )}
-          {tickerStatus === "valid" && expiries.length > 0 && (
+          {expiryStatus === "done" && expiries.length > 0 && (
             <p className="text-xs text-gray-600 mt-1">{expiries.length} expiry dates available</p>
+          )}
+          {expiryStatus === "error" && (
+            <p className="text-xs text-rose-400 mt-1">No options found for this ticker</p>
           )}
         </div>
 
@@ -249,7 +301,7 @@ export default function LegForm({ onAdd }) {
 
       <button
         type="submit"
-        disabled={tickerStatus === "invalid" || tickerStatus === "loading"}
+        disabled={expiryStatus === "loading" || expiryStatus === "error" || !leg.ticker}
         className="mt-5 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl transition shadow-lg shadow-indigo-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
       >
         + Add leg
