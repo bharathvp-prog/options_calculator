@@ -17,6 +17,10 @@ backend/data/tickers_cache.json
 frontend/node_modules/
 frontend/dist/
 
+# Excel files (never commit portfolio exports or fixtures)
+*.xlsx
+*.xls
+
 # IDE
 .vscode/
 .idea/

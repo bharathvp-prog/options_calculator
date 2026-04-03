@@ -1,16 +1,17 @@
 import os
 import firebase_admin
-from firebase_admin import credentials, auth as firebase_auth
-from fastapi import FastAPI, HTTPException, Header, Query
+from firebase_admin import credentials, auth as firebase_auth, firestore
+from fastapi import FastAPI, HTTPException, Header, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import yfinance as yf
-from datetime import date
+from datetime import date, datetime, timezone
 from services.options import get_expiry_dates, get_option_chain, find_cheapest, pick_horizon_expiries, get_options_for_expiry
 from services.tickers import load_tickers, search_tickers
 from services.strategy import identify_strategy
 from services.payoff import OptionLeg, compute_payoff_table
+from services.portfolio import parse_saxo_xlsx, symbol_to_yf_ticker, get_price_history
 
 load_dotenv()
 
@@ -89,6 +90,14 @@ class StrategyCompareRequest(BaseModel):
     ticker: str
     legs: list[StrategyCompareLeg]
     sort_by: str = "ask"
+
+
+# ── Firestore ───────────────────────────────────────────────────────────────
+
+def get_firestore():
+    if not firebase_admin._apps:
+        return None
+    return firestore.client()
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
@@ -361,3 +370,78 @@ def search_cheapest(payload: SearchRequest, authorization: str = Header(default=
         "total_mid": round(total_mid, 4),
         "forced_expiry": forced_expiry,
     }
+
+
+# ── Portfolio endpoints ──────────────────────────────────────────────────────
+
+@app.post("/api/portfolio/upload")
+async def portfolio_upload(
+    file: UploadFile = File(...),
+    authorization: str = Header(default=None),
+):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    if not file.filename.endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Only .xlsx files are accepted")
+
+    content = await file.read()
+    try:
+        positions = parse_saxo_xlsx(content)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to parse file: {e}")
+
+    for p in positions:
+        p["yf_ticker"] = symbol_to_yf_ticker(p.get("symbol", ""), p.get("asset_type", ""))
+
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+    doc = {"uploaded_at": uploaded_at, "positions": positions}
+
+    db = get_firestore()
+    if db is not None:
+        db.collection("portfolios").document(uid).set(doc)
+
+    return {"uploaded_at": uploaded_at, "count": len(positions)}
+
+
+@app.get("/api/portfolio")
+def portfolio_get(authorization: str = Header(default=None)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        return {"positions": [], "uploaded_at": None}
+
+    doc_ref = db.collection("portfolios").document(uid)
+    doc = doc_ref.get()
+    if not doc.exists:
+        return {"positions": [], "uploaded_at": None}
+
+    data = doc.to_dict()
+    return {"positions": data.get("positions", []), "uploaded_at": data.get("uploaded_at")}
+
+
+@app.get("/api/portfolio/prices")
+def portfolio_prices(authorization: str = Header(default=None), days: int = Query(default=7)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        return {"dates": [], "prices": {}}
+
+    doc_ref = db.collection("portfolios").document(uid)
+    doc = doc_ref.get()
+    if not doc.exists:
+        return {"dates": [], "prices": {}}
+
+    positions = doc.to_dict().get("positions", [])
+    tickers = list(dict.fromkeys(
+        p["yf_ticker"] for p in positions if p.get("yf_ticker")
+    ))
+    if not tickers:
+        return {"dates": [], "prices": {}}
+
+    dates, prices = get_price_history(tickers, days=days)
+    return {"dates": dates, "prices": prices}
