@@ -445,3 +445,53 @@ def portfolio_prices(authorization: str = Header(default=None), days: int = Quer
 
     dates, prices = get_price_history(tickers, days=days)
     return {"dates": dates, "prices": prices}
+
+
+@app.post("/api/portfolio/refresh")
+def portfolio_refresh(authorization: str = Header(default=None)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+
+    doc_ref = db.collection("portfolios").document(uid)
+    doc = doc_ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="No portfolio found")
+
+    positions = doc.to_dict().get("positions", [])
+    tickers = list(dict.fromkeys(p["yf_ticker"] for p in positions if p.get("yf_ticker")))
+
+    latest_prices: dict[str, float] = {}
+    if tickers:
+        _, price_map = get_price_history(tickers, days=1)
+        for ticker, vals in price_map.items():
+            if vals and vals[-1] is not None:
+                latest_prices[ticker] = vals[-1]
+
+    for pos in positions:
+        yf_ticker = pos.get("yf_ticker")
+        new_price = latest_prices.get(yf_ticker) if yf_ticker else None
+        if new_price is None:
+            continue
+
+        if pos.get("asset_type") == "Stock Option":
+            pos["underlying_price"] = round(new_price, 4)
+        else:
+            old_price = pos.get("current_price")
+            if not old_price:
+                continue
+            qty_fx = (pos.get("market_value_sgd") or 0) / old_price
+            pos["current_price"] = round(new_price, 4)
+            pos["market_value_sgd"] = round(new_price * qty_fx, 2)
+            open_price = pos.get("open_price") or 0
+            if pos.get("l_s") == "Short":
+                pos["pnl_sgd"] = round((open_price - new_price) * qty_fx, 2)
+            else:
+                pos["pnl_sgd"] = round((new_price - open_price) * qty_fx, 2)
+
+    refreshed_at = datetime.now(timezone.utc).isoformat()
+    doc_ref.set({"uploaded_at": refreshed_at, "positions": positions})
+    return {"uploaded_at": refreshed_at, "positions": positions}

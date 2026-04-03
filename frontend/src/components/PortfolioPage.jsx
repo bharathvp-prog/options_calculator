@@ -142,35 +142,30 @@ function PortfolioChart({ dates, values, width = 800, height = 100 }) {
   )
 }
 
-// Compute total portfolio value for each date using market_value_sgd
-// We use FX-naive approach: sum of (qty * price) for stocks, market_value_sgd for options
-// Simplest: for each date, for each position with a yf_ticker, scale market_value_sgd
-// by (price[date] / current_price). Sum them up.
+// Compute total portfolio value for each date.
+// For both stocks and options we scale market_value_sgd by the movement of the underlying
+// stock price. For stocks the reference is the last yfinance close (anchors last column to
+// Saxo market value). For options the reference is pos.underlying_price (Saxo's current
+// underlying price), which ties the last column to market_value_sgd as well.
+function scaledMvForDate(pos, di, dates, prices) {
+  const mv = pos.market_value_sgd ?? 0
+  const priceSeries = prices[pos.yf_ticker]
+  if (!priceSeries || priceSeries.length === 0) return mv
+  const refPrice = pos.asset_type === "Stock Option"
+    ? pos.underlying_price
+    : priceSeries[priceSeries.length - 1]
+  if (!refPrice) return mv
+  const offset = dates.length - priceSeries.length
+  const priceIdx = di - offset
+  const historicPrice = priceIdx >= 0 ? priceSeries[priceIdx] : null
+  if (historicPrice === null) return mv
+  return mv * (historicPrice / refPrice)
+}
+
 function computePortfolioTimeSeries(positions, dates, prices) {
   if (!dates || dates.length === 0) return []
   return dates.map((_, di) => {
-    let total = 0
-    for (const pos of positions) {
-      const ticker = pos.yf_ticker
-      const priceSeries = prices[ticker]
-      if (!priceSeries || priceSeries.length === 0) {
-        // No price data — use static market_value_sgd
-        total += pos.market_value_sgd ?? 0
-        continue
-      }
-      // Align: priceSeries may be shorter than dates if some dates had no data
-      // We map by index relative to the tail
-      const offset = dates.length - priceSeries.length
-      const priceIdx = di - offset
-      const historicPrice = priceIdx >= 0 ? priceSeries[priceIdx] : null
-      const currentPrice = pos.current_price
-      if (historicPrice !== null && currentPrice && currentPrice !== 0) {
-        const scaledMv = (pos.market_value_sgd ?? 0) * (historicPrice / currentPrice)
-        total += scaledMv
-      } else {
-        total += pos.market_value_sgd ?? 0
-      }
-    }
+    const total = positions.reduce((sum, pos) => sum + scaledMvForDate(pos, di, dates, prices), 0)
     return Math.round(total)
   })
 }
@@ -238,7 +233,7 @@ function GroupTable({ assetType, positions }) {
           </tbody>
           <tfoot>
             <tr className="border-t border-white/8 bg-white/[0.015]">
-              <td colSpan={isOptions ? 8 : 4} className="px-5 py-2.5 text-xs font-medium text-gray-600 uppercase tracking-wider">
+              <td colSpan={isOptions ? 8 : 5} className="px-5 py-2.5 text-xs font-medium text-gray-600 uppercase tracking-wider">
                 Subtotal
               </td>
               <td className={`px-3 py-2.5 text-right text-sm font-semibold ${pnlColor(totalPnl)}`}>
@@ -256,32 +251,33 @@ function GroupTable({ assetType, positions }) {
 }
 
 // Trend view: one row per position, columns = dates, value = market value that day
-function TrendTable({ assetType, positions, dates, prices }) {
+function TrendTable({ assetType, positions, dates, prices, allDates }) {
   const isOptions = assetType === "Stock Option"
   const totalPnl = positions.reduce((s, p) => s + (p.pnl_sgd ?? 0), 0)
   const totalMv = positions.reduce((s, p) => s + (p.market_value_sgd ?? 0), 0)
 
-  // Compute per-date market value for a position
   function historicMv(pos, di) {
-    const ticker = pos.yf_ticker
-    const priceSeries = prices[ticker]
-    if (!priceSeries || priceSeries.length === 0) return null
-    const offset = dates.length - priceSeries.length
-    const priceIdx = di - offset
-    const historicPrice = priceIdx >= 0 ? priceSeries[priceIdx] : null
-    const currentPrice = pos.current_price
-    if (historicPrice !== null && currentPrice && currentPrice !== 0) {
-      return (pos.market_value_sgd ?? 0) * (historicPrice / currentPrice)
-    }
-    return null
+    return scaledMvForDate(pos, di, dates, prices)
   }
 
-  // Compute per-date total for this group
   function groupTotalForDate(di) {
-    return positions.reduce((sum, pos) => {
-      const mv = historicMv(pos, di)
-      return sum + (mv !== null ? mv : (pos.market_value_sgd ?? 0))
-    }, 0)
+    return positions.reduce((sum, pos) => sum + historicMv(pos, di), 0)
+  }
+
+  function twoWeekChange(pos) {
+    if (!allDates || allDates.length < 2) return null
+    const start = scaledMvForDate(pos, 0, allDates, prices)
+    const end   = scaledMvForDate(pos, allDates.length - 1, allDates, prices)
+    return end - start
+  }
+
+  const groupTwoWeekChange = positions.reduce((sum, pos) => sum + (twoWeekChange(pos) ?? 0), 0)
+
+  function dayColor(current, prev) {
+    if (prev === null || prev === undefined) return "text-gray-400"
+    if (current > prev) return "text-emerald-400"
+    if (current < prev) return "text-rose-400"
+    return "text-gray-400"
   }
 
   return (
@@ -306,56 +302,71 @@ function TrendTable({ assetType, positions, dates, prices }) {
               ))}
               <th className="text-right px-5 py-2.5 font-medium">P&L (SGD)</th>
               <th className="text-right px-5 py-2.5 font-medium">Mkt Val (SGD)</th>
+              <th className="text-right px-5 py-2.5 font-medium whitespace-nowrap">2W Chg (SGD)</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/[0.03]">
-            {positions.map((pos, i) => (
-              <tr key={i} className="hover:bg-white/[0.02] transition">
-                <td className="px-5 py-2.5 text-gray-300 max-w-[180px] sticky left-0 bg-[#0a0a0f]">
-                  <span title={pos.instrument} className="truncate block">{pos.instrument}</span>
-                </td>
-                {isOptions && (
-                  <td className="px-3 py-2.5 text-center"><CpBadge value={pos.call_put} /></td>
-                )}
-                {isOptions && (
-                  <td className="px-3 py-2.5 text-right text-gray-400">{fmt(pos.strike)}</td>
-                )}
-                <td className="px-3 py-2.5 text-center"><LsBadge value={pos.l_s} /></td>
-                {dates.map((_, di) => {
-                  const mv = historicMv(pos, di)
-                  return (
-                    <td key={di} className="px-3 py-2.5 text-right text-gray-400 whitespace-nowrap">
-                      {mv !== null ? fmt(mv, 0) : <span className="text-gray-700">—</span>}
-                    </td>
-                  )
-                })}
-                <td className={`px-3 py-2.5 text-right font-medium ${pnlColor(pos.pnl_sgd)}`}>
-                  {pos.pnl_sgd !== null && pos.pnl_sgd !== undefined
-                    ? (pos.pnl_sgd >= 0 ? "+" : "") + fmt(pos.pnl_sgd)
-                    : "—"}
-                </td>
-                <td className="px-5 py-2.5 text-right text-gray-300">{fmt(pos.market_value_sgd)}</td>
-              </tr>
-            ))}
+            {positions.map((pos, i) => {
+              const chg = twoWeekChange(pos)
+              return (
+                <tr key={i} className="hover:bg-white/[0.02] transition">
+                  <td className="px-5 py-2.5 text-gray-300 max-w-[180px] sticky left-0 bg-[#0a0a0f]">
+                    <span title={pos.instrument} className="truncate block">{pos.instrument}</span>
+                  </td>
+                  {isOptions && (
+                    <td className="px-3 py-2.5 text-center"><CpBadge value={pos.call_put} /></td>
+                  )}
+                  {isOptions && (
+                    <td className="px-3 py-2.5 text-right text-gray-400">{fmt(pos.strike)}</td>
+                  )}
+                  <td className="px-3 py-2.5 text-center"><LsBadge value={pos.l_s} /></td>
+                  {dates.map((_, di) => {
+                    const cur = historicMv(pos, di)
+                    const prev = di > 0 ? historicMv(pos, di - 1) : null
+                    return (
+                      <td key={di} className={`px-3 py-2.5 text-right whitespace-nowrap ${dayColor(cur, prev)}`}>
+                        {fmt(cur, 0)}
+                      </td>
+                    )
+                  })}
+                  <td className={`px-3 py-2.5 text-right font-medium ${pnlColor(pos.pnl_sgd)}`}>
+                    {pos.pnl_sgd !== null && pos.pnl_sgd !== undefined
+                      ? (pos.pnl_sgd >= 0 ? "+" : "") + fmt(pos.pnl_sgd)
+                      : "—"}
+                  </td>
+                  <td className="px-5 py-2.5 text-right text-gray-300">{fmt(pos.market_value_sgd)}</td>
+                  <td className={`px-5 py-2.5 text-right font-medium ${chg !== null ? (chg >= 0 ? "text-emerald-400" : "text-rose-400") : "text-gray-600"}`}>
+                    {chg !== null ? (chg >= 0 ? "+" : "") + fmt(chg, 0) : "—"}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
           <tfoot>
             <tr className="border-t border-white/8 bg-white/[0.015]">
               <td
-                colSpan={isOptions ? 3 : 2}
+                colSpan={isOptions ? 4 : 2}
                 className="px-5 py-2.5 text-xs font-medium text-gray-600 uppercase tracking-wider sticky left-0 bg-[#111117]"
               >
                 Subtotal
               </td>
-              {dates.map((_, di) => (
-                <td key={di} className="px-3 py-2.5 text-right text-sm font-semibold text-white whitespace-nowrap">
-                  {fmt(groupTotalForDate(di), 0)}
-                </td>
-              ))}
+              {dates.map((_, di) => {
+                const cur = groupTotalForDate(di)
+                const prev = di > 0 ? groupTotalForDate(di - 1) : null
+                return (
+                  <td key={di} className={`px-3 py-2.5 text-right text-sm font-semibold whitespace-nowrap ${dayColor(cur, prev)}`}>
+                    {fmt(cur, 0)}
+                  </td>
+                )
+              })}
               <td className={`px-3 py-2.5 text-right text-sm font-semibold ${pnlColor(totalPnl)}`}>
                 {(totalPnl >= 0 ? "+" : "") + fmt(totalPnl)}
               </td>
               <td className="px-5 py-2.5 text-right text-sm font-semibold text-white">
                 {fmt(totalMv)}
+              </td>
+              <td className={`px-5 py-2.5 text-right text-sm font-semibold ${groupTwoWeekChange >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                {(groupTwoWeekChange >= 0 ? "+" : "") + fmt(groupTwoWeekChange, 0)}
               </td>
             </tr>
           </tfoot>
@@ -370,6 +381,7 @@ export default function PortfolioPage() {
   const [uploadedAt, setUploadedAt] = useState(null)
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [showUploadZone, setShowUploadZone] = useState(false)
   const [error, setError] = useState("")
@@ -413,6 +425,28 @@ export default function PortfolioPage() {
       // best-effort
     } finally {
       setPricesLoading(false)
+    }
+  }
+
+  async function refreshPrices() {
+    setRefreshing(true)
+    setError("")
+    try {
+      const token = await getToken()
+      const res = await fetch("/api/portfolio/refresh", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || "Refresh failed")
+      setPositions(data.positions || [])
+      setUploadedAt(data.uploaded_at || null)
+      setPriceDates([])
+      setPriceMap({})
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -547,6 +581,20 @@ export default function PortfolioPage() {
               {showTrend ? "Hide trend" : "Show trend"}
             </button>
             <button
+              onClick={refreshPrices}
+              disabled={refreshing}
+              className="text-sm text-gray-500 hover:text-gray-300 border border-white/10 hover:border-white/20 rounded-xl px-4 py-2 transition disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {refreshing ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Refreshing…
+                </>
+              ) : "Refresh prices"}
+            </button>
+            <button
               onClick={() => setShowUploadZone(v => !v)}
               className="text-sm text-gray-500 hover:text-gray-300 border border-white/10 hover:border-white/20 rounded-xl px-4 py-2 transition"
             >
@@ -664,6 +712,7 @@ export default function PortfolioPage() {
               positions={grouped[group]}
               dates={trendDates}
               prices={priceMap}
+              allDates={priceDates}
             />
           ))}
         </>
