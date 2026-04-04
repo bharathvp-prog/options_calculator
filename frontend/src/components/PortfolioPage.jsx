@@ -170,10 +170,107 @@ function computePortfolioTimeSeries(positions, dates, prices) {
   })
 }
 
-function GroupTable({ assetType, positions }) {
+function PositionDetail({ pos, priceDates, priceMap, pricesLoading }) {
+  const isOptions = pos.asset_type === "Stock Option"
+  const dates7 = priceDates.slice(-7)
+  const values7 = dates7.map((_, di) => {
+    const globalDi = priceDates.length - 7 + di
+    return scaledMvForDate(pos, globalDi, priceDates, priceMap)
+  })
+  const hasPrices = dates7.length >= 2 && values7.some(v => v !== (pos.market_value_sgd ?? 0))
+
+  const pnlPct = pos.open_price && pos.current_price
+    ? ((pos.current_price - pos.open_price) / Math.abs(pos.open_price)) * 100
+    : null
+
+  return (
+    <div className="bg-white/[0.025] rounded-xl p-4 mt-1 mb-2 mx-1 flex flex-col sm:flex-row gap-5">
+      {/* Stats */}
+      <div className="grid grid-cols-2 gap-x-10 gap-y-2.5 text-xs shrink-0">
+        <div>
+          <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-0.5">Open price</p>
+          <p className="text-gray-300 font-medium">{fmt(pos.open_price)}</p>
+        </div>
+        <div>
+          <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-0.5">
+            {isOptions ? "Underlying" : "Current price"}
+          </p>
+          <p className="text-gray-300 font-medium">
+            {fmt(isOptions ? pos.underlying_price : pos.current_price)}
+          </p>
+        </div>
+        <div>
+          <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-0.5">P&L (SGD)</p>
+          <p className={`font-semibold ${pnlColor(pos.pnl_sgd)}`}>
+            {pos.pnl_sgd != null ? (pos.pnl_sgd >= 0 ? "+" : "") + fmt(pos.pnl_sgd) : "—"}
+            {pnlPct != null && (
+              <span className="ml-1.5 font-normal text-[10px] opacity-70">
+                ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
+              </span>
+            )}
+          </p>
+        </div>
+        <div>
+          <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-0.5">Mkt Val (SGD)</p>
+          <p className="text-gray-300 font-medium">{fmt(pos.market_value_sgd)}</p>
+        </div>
+        {isOptions && (
+          <>
+            <div>
+              <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-0.5">Strike</p>
+              <p className="text-gray-300 font-medium">{fmt(pos.strike)}</p>
+            </div>
+            <div>
+              <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-0.5">Expiry</p>
+              <p className="text-gray-300 font-medium">{pos.expiry || "—"}</p>
+            </div>
+          </>
+        )}
+        <div>
+          <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-0.5">Quantity</p>
+          <p className="text-gray-300 font-medium">{fmt(pos.quantity, 0)}</p>
+        </div>
+        {pos.currency && pos.currency !== "SGD" && (
+          <div>
+            <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-0.5">Currency</p>
+            <p className="text-gray-300 font-medium">{pos.currency}</p>
+          </div>
+        )}
+      </div>
+
+      {/* 7-day chart */}
+      <div className="flex-1 min-w-0">
+        <p className="text-gray-600 uppercase tracking-wider text-[9px] mb-2">
+          7-day {isOptions ? "underlying" : "position"} value (SGD)
+        </p>
+        {pricesLoading ? (
+          <div className="h-16 flex items-center justify-center">
+            <div className="h-1 w-16 rounded bg-white/10 animate-pulse" />
+          </div>
+        ) : hasPrices ? (
+          <PortfolioChart dates={dates7} values={values7} height={90} width={500} />
+        ) : (
+          <p className="text-xs text-gray-700 py-4">No price history available.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function GroupTable({ assetType, positions, priceDates, priceMap, pricesLoading, onRequestPrices }) {
   const isOptions = assetType === "Stock Option"
   const totalPnl = positions.reduce((s, p) => s + (p.pnl_sgd ?? 0), 0)
   const totalMv = positions.reduce((s, p) => s + (p.market_value_sgd ?? 0), 0)
+  const [expandedIdx, setExpandedIdx] = useState(null)
+  const colSpan = isOptions ? 10 : 7
+
+  function handleRowClick(i) {
+    const next = expandedIdx === i ? null : i
+    setExpandedIdx(next)
+    if (next !== null && priceDates.length === 0 && !pricesLoading) {
+      onRequestPrices()
+    }
+  }
 
   return (
     <div className="rounded-2xl border border-white/8 bg-white/[0.02] overflow-hidden">
@@ -202,33 +299,57 @@ function GroupTable({ assetType, positions }) {
           </thead>
           <tbody className="divide-y divide-white/[0.03]">
             {positions.map((p, i) => (
-              <tr key={i} className="hover:bg-white/[0.02] transition">
-                <td className="px-5 py-2.5 text-gray-300 max-w-[240px]">
-                  <span title={p.instrument} className="truncate block">{p.instrument}</span>
-                  {p.currency && p.currency !== "SGD" && (
-                    <span className="text-gray-700 text-[9px]">{p.currency}</span>
+              <>
+                <tr
+                  key={i}
+                  onClick={() => handleRowClick(i)}
+                  className={`cursor-pointer transition ${expandedIdx === i ? "bg-white/[0.03]" : "hover:bg-white/[0.02]"}`}
+                >
+                  <td className="px-5 py-2.5 text-gray-300 max-w-[240px]">
+                    <div className="flex items-center gap-1.5">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                        className={`w-3 h-3 text-gray-700 shrink-0 transition-transform ${expandedIdx === i ? "rotate-90" : ""}`}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                      </svg>
+                      <span title={p.instrument} className="truncate block">{p.instrument}</span>
+                    </div>
+                    {p.currency && p.currency !== "SGD" && (
+                      <span className="text-gray-700 text-[9px] ml-4">{p.currency}</span>
+                    )}
+                  </td>
+                  {isOptions && (
+                    <td className="px-3 py-2.5 text-center"><CpBadge value={p.call_put} /></td>
                   )}
-                </td>
-                {isOptions && (
-                  <td className="px-3 py-2.5 text-center"><CpBadge value={p.call_put} /></td>
+                  {isOptions && (
+                    <td className="px-3 py-2.5 text-right text-gray-400">{fmt(p.strike)}</td>
+                  )}
+                  {isOptions && (
+                    <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">{p.expiry || "—"}</td>
+                  )}
+                  <td className="px-3 py-2.5 text-center"><LsBadge value={p.l_s} /></td>
+                  <td className="px-3 py-2.5 text-right text-gray-400">{fmt(p.quantity, 0)}</td>
+                  <td className="px-3 py-2.5 text-right text-gray-500">{fmt(p.open_price)}</td>
+                  <td className="px-3 py-2.5 text-right text-gray-400">{fmt(p.current_price)}</td>
+                  <td className={`px-3 py-2.5 text-right font-medium ${pnlColor(p.pnl_sgd)}`}>
+                    {p.pnl_sgd !== null && p.pnl_sgd !== undefined
+                      ? (p.pnl_sgd >= 0 ? "+" : "") + fmt(p.pnl_sgd)
+                      : "—"}
+                  </td>
+                  <td className="px-5 py-2.5 text-right text-gray-300">{fmt(p.market_value_sgd)}</td>
+                </tr>
+                {expandedIdx === i && (
+                  <tr key={`${i}-detail`}>
+                    <td colSpan={colSpan} className="px-3 py-0 border-b border-white/[0.03]">
+                      <PositionDetail
+                        pos={p}
+                        priceDates={priceDates}
+                        priceMap={priceMap}
+                        pricesLoading={pricesLoading}
+                      />
+                    </td>
+                  </tr>
                 )}
-                {isOptions && (
-                  <td className="px-3 py-2.5 text-right text-gray-400">{fmt(p.strike)}</td>
-                )}
-                {isOptions && (
-                  <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">{p.expiry || "—"}</td>
-                )}
-                <td className="px-3 py-2.5 text-center"><LsBadge value={p.l_s} /></td>
-                <td className="px-3 py-2.5 text-right text-gray-400">{fmt(p.quantity, 0)}</td>
-                <td className="px-3 py-2.5 text-right text-gray-500">{fmt(p.open_price)}</td>
-                <td className="px-3 py-2.5 text-right text-gray-400">{fmt(p.current_price)}</td>
-                <td className={`px-3 py-2.5 text-right font-medium ${pnlColor(p.pnl_sgd)}`}>
-                  {p.pnl_sgd !== null && p.pnl_sgd !== undefined
-                    ? (p.pnl_sgd >= 0 ? "+" : "") + fmt(p.pnl_sgd)
-                    : "—"}
-                </td>
-                <td className="px-5 py-2.5 text-right text-gray-300">{fmt(p.market_value_sgd)}</td>
-              </tr>
+              </>
             ))}
           </tbody>
           <tfoot>
@@ -693,7 +814,15 @@ export default function PortfolioPage() {
 
       {/* Grouped tables — normal or trend view */}
       {!loading && !showTrend && orderedGroups.map(group => (
-        <GroupTable key={group} assetType={group} positions={grouped[group]} />
+        <GroupTable
+          key={group}
+          assetType={group}
+          positions={grouped[group]}
+          priceDates={priceDates}
+          priceMap={priceMap}
+          pricesLoading={pricesLoading}
+          onRequestPrices={() => fetchPrices(14)}
+        />
       ))}
 
       {!loading && showTrend && (
