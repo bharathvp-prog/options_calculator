@@ -353,14 +353,14 @@ function GroupTable({ assetType, positions, priceDates, priceMap, pricesLoading,
             ))}
           </tbody>
           <tfoot>
-            <tr className="border-t border-white/8 bg-white/[0.015]">
-              <td colSpan={isOptions ? 8 : 5} className="px-5 py-2.5 text-xs font-medium text-gray-600 uppercase tracking-wider">
+            <tr className="border-t-2 border-white/15 bg-white/[0.04]">
+              <td colSpan={isOptions ? 8 : 5} className="px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
                 Subtotal
               </td>
-              <td className={`px-3 py-2.5 text-right text-sm font-semibold ${pnlColor(totalPnl)}`}>
+              <td className={`px-3 py-3 text-right text-sm font-bold ${pnlColor(totalPnl)}`}>
                 {(totalPnl >= 0 ? "+" : "") + fmt(totalPnl)}
               </td>
-              <td className="px-5 py-2.5 text-right text-sm font-semibold text-white">
+              <td className="px-5 py-3 text-right text-sm font-bold text-white">
                 {fmt(totalMv)}
               </td>
             </tr>
@@ -464,10 +464,10 @@ function TrendTable({ assetType, positions, dates, prices, allDates }) {
             })}
           </tbody>
           <tfoot>
-            <tr className="border-t border-white/8 bg-white/[0.015]">
+            <tr className="border-t-2 border-white/15 bg-white/[0.04]">
               <td
                 colSpan={isOptions ? 4 : 2}
-                className="px-5 py-2.5 text-xs font-medium text-gray-600 uppercase tracking-wider sticky left-0 bg-[#111117]"
+                className="px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider sticky left-0 bg-[#16161e]"
               >
                 Subtotal
               </td>
@@ -475,18 +475,18 @@ function TrendTable({ assetType, positions, dates, prices, allDates }) {
                 const cur = groupTotalForDate(di)
                 const prev = di > 0 ? groupTotalForDate(di - 1) : null
                 return (
-                  <td key={di} className={`px-3 py-2.5 text-right text-sm font-semibold whitespace-nowrap ${dayColor(cur, prev)}`}>
+                  <td key={di} className={`px-3 py-3 text-right text-sm font-bold whitespace-nowrap ${dayColor(cur, prev)}`}>
                     {fmt(cur, 0)}
                   </td>
                 )
               })}
-              <td className={`px-3 py-2.5 text-right text-sm font-semibold ${pnlColor(totalPnl)}`}>
+              <td className={`px-3 py-3 text-right text-sm font-bold ${pnlColor(totalPnl)}`}>
                 {(totalPnl >= 0 ? "+" : "") + fmt(totalPnl)}
               </td>
-              <td className="px-5 py-2.5 text-right text-sm font-semibold text-white">
+              <td className="px-5 py-3 text-right text-sm font-bold text-white">
                 {fmt(totalMv)}
               </td>
-              <td className={`px-5 py-2.5 text-right text-sm font-semibold ${groupTwoWeekChange >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+              <td className={`px-5 py-3 text-right text-sm font-bold ${groupTwoWeekChange >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                 {(groupTwoWeekChange >= 0 ? "+" : "") + fmt(groupTwoWeekChange, 0)}
               </td>
             </tr>
@@ -795,19 +795,19 @@ export default function PortfolioPage() {
       {/* Summary stats */}
       {!loading && positions.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
-          <div className="bg-white/[0.02] border border-white/8 rounded-2xl px-5 py-4">
-            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Positions</p>
-            <p className="text-2xl font-bold text-white">{positions.length}</p>
+          <div className="bg-white/[0.03] border border-white/12 rounded-2xl px-5 py-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Positions</p>
+            <p className="text-3xl font-bold text-white">{positions.length}</p>
           </div>
-          <div className="bg-white/[0.02] border border-white/8 rounded-2xl px-5 py-4">
-            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Total P&L (SGD)</p>
-            <p className={`text-2xl font-bold ${pnlColor(totalPnl)}`}>
+          <div className="bg-white/[0.03] border border-white/12 rounded-2xl px-5 py-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Total P&L (SGD)</p>
+            <p className={`text-3xl font-bold ${pnlColor(totalPnl)}`}>
               {(totalPnl >= 0 ? "+" : "") + fmt(totalPnl)}
             </p>
           </div>
-          <div className="bg-white/[0.02] border border-white/8 rounded-2xl px-5 py-4">
-            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Market Value (SGD)</p>
-            <p className="text-2xl font-bold text-white">{fmt(totalMv)}</p>
+          <div className="bg-white/[0.03] border border-white/12 rounded-2xl px-5 py-5">
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Market Value (SGD)</p>
+            <p className="text-3xl font-bold text-white">{fmt(totalMv)}</p>
           </div>
         </div>
       )}
