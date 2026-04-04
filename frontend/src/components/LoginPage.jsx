@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useNavigate, Link } from "react-router-dom"
 import {
   signInWithPopup,
@@ -11,6 +11,13 @@ import { auth } from "../firebase"
 export default function LoginPage() {
   const navigate = useNavigate()
   const [mode, setMode] = useState("signin")
+
+  useEffect(() => {
+    const html = document.documentElement
+    const hadLight = html.classList.contains("light")
+    html.classList.remove("light")
+    return () => { if (hadLight) html.classList.add("light") }
+  }, [])
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
