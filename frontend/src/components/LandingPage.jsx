@@ -1,3 +1,4 @@
+import { useEffect } from "react"
 import { Link } from "react-router-dom"
 
 const features = [
@@ -55,6 +56,13 @@ const stats = [
 ]
 
 export default function LandingPage() {
+  useEffect(() => {
+    const html = document.documentElement
+    const hadLight = html.classList.contains("light")
+    html.classList.remove("light")
+    return () => { if (hadLight) html.classList.add("light") }
+  }, [])
+
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white">
 
