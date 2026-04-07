@@ -17,7 +17,7 @@ const features = [
         <path strokeLinecap="round" strokeLinejoin="round" d="M9.348 14.652a3.75 3.75 0 010-5.304m5.304 0a3.75 3.75 0 010 5.304m-7.425 2.121a6.75 6.75 0 010-9.546m9.546 0a6.75 6.75 0 010 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12z" />
       </svg>
     ),
-    title: "Live Yahoo Finance Data",
+    title: "Live Market Data",
     desc: "Option chains fetched in real time. No stale data, no subscriptions, no API keys — just live market prices.",
   },
   {
@@ -115,7 +115,7 @@ export default function LandingPage() {
           </h1>
 
           <p className="text-lg text-gray-400 max-w-lg mb-10 leading-relaxed">
-            Build multi-leg options strategies and instantly surface the lowest-cost contracts from live Yahoo Finance data. Free, fast, no sign-up friction.
+            Build multi-leg options strategies and instantly surface the lowest-cost contracts from live market data. Free, fast, no sign-up friction.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center gap-3">
@@ -270,7 +270,7 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="px-8 py-6 border-t border-white/5 flex items-center justify-between text-xs text-gray-600">
         <span className="font-medium text-gray-500">Oxas</span>
-        <span>© {new Date().getFullYear()} · Data via Yahoo Finance</span>
+        <span>© {new Date().getFullYear()}</span>
       </footer>
     </div>
   )

@@ -4,6 +4,10 @@ const fmtPct = (n) => (n == null ? "—" : `${n.toFixed(1)}%`)
 export default function ComparisonView({ data, onSelectHorizon, selectedExpiry, onViewPayoff }) {
   if (!data?.horizons?.length) return null
 
+  const skippedReasons = data.skipped?.length
+    ? [...new Set(data.skipped.map((s) => s.reason))]
+    : []
+
   const selectedHorizon = data.horizons.find(h => h.expiry === selectedExpiry)
 
   return (
@@ -124,7 +128,7 @@ export default function ComparisonView({ data, onSelectHorizon, selectedExpiry, 
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-white/5">
-                  {["#", "Contract", "Type", "Side", "Strike", "Bid", "Ask", "Mid", "Qty", "Cost"].map((col) => (
+                  {["#", "Contract", "Type", "Side", "Strike", "Bid", "Ask", "Mid", "LTP", "Qty", "Cost"].map((col) => (
                     <th key={col} className="px-3 py-2.5 text-gray-500 font-medium uppercase tracking-wider text-right first:text-left">
                       {col}
                     </th>
@@ -134,7 +138,11 @@ export default function ComparisonView({ data, onSelectHorizon, selectedExpiry, 
               <tbody>
                 {selectedHorizon.legs.map((leg, i) => {
                   const isBuy = leg.side === "buy"
-                  const perContract = isBuy ? -(leg.ask || leg.mid || 0) : (leg.bid || leg.mid || 0)
+                  const usedLtp = isBuy ? leg.ask <= 0 : leg.bid <= 0
+                  const rawPrice = isBuy
+                    ? (leg.ask > 0 ? leg.ask : (leg.lastPrice || 0))
+                    : (leg.bid > 0 ? leg.bid : (leg.lastPrice || 0))
+                  const perContract = isBuy ? -rawPrice : rawPrice
                   const totalCost = perContract * (leg.qty || 1) * 100
 
                   return (
@@ -167,9 +175,11 @@ export default function ComparisonView({ data, onSelectHorizon, selectedExpiry, 
                       <td className="px-3 py-2.5 text-right text-gray-400">{fmt(leg.bid)}</td>
                       <td className="px-3 py-2.5 text-right text-gray-400">{fmt(leg.ask)}</td>
                       <td className="px-3 py-2.5 text-right text-gray-300 font-medium">{fmt(leg.mid)}</td>
+                      <td className="px-3 py-2.5 text-right text-gray-400">{fmt(leg.lastPrice)}</td>
                       <td className="px-3 py-2.5 text-right text-gray-400">{leg.qty || 1}</td>
                       <td className={`px-3 py-2.5 text-right font-semibold ${totalCost >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                         {totalCost >= 0 ? "+" : "−"}${Math.abs(totalCost).toFixed(0)}
+                        {usedLtp && <span className="ml-1 text-[9px] text-amber-500/70 font-normal">LTP</span>}
                       </td>
                     </tr>
                   )
@@ -177,7 +187,7 @@ export default function ComparisonView({ data, onSelectHorizon, selectedExpiry, 
               </tbody>
               <tfoot>
                 <tr className="border-t border-white/10 bg-white/[0.02]">
-                  <td colSpan={9} className="px-3 py-3 text-right text-xs text-gray-400 font-medium uppercase tracking-wider">
+                  <td colSpan={10} className="px-3 py-3 text-right text-xs text-gray-400 font-medium uppercase tracking-wider">
                     Net cost
                   </td>
                   <td className={`px-3 py-3 text-right text-sm font-bold ${
@@ -197,6 +207,13 @@ export default function ComparisonView({ data, onSelectHorizon, selectedExpiry, 
         <span className="text-gray-800">·</span>
         <span><span className="text-rose-400 font-medium">red DTE</span> = under 30 days, unlikely to see target price move</span>
       </div>
+
+      {skippedReasons.length > 0 && (
+        <div className="mx-4 mb-4 px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-400">
+          <span className="font-semibold">{data.skipped.length} horizon{data.skipped.length !== 1 ? "s" : ""} excluded</span>
+          {" — "}{skippedReasons.join("; ")}
+        </div>
+      )}
     </div>
   )
 }

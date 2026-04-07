@@ -2,7 +2,7 @@ import { useState } from "react"
 import useSpeechRecognition from "../hooks/useSpeechRecognition"
 
 const EXAMPLES = [
-  "I'm confident AMD will grow to 300 but no more than 400 by June 2028",
+  "I'm confident AMD will grow to 250 but no more than 300 by June 2028",
   "NVDA will crash below 80 by end of 2025",
   "TSLA will make a big move after earnings in January 2026",
   "AAPL will stay flat around 220 through March 2026",
@@ -45,7 +45,7 @@ export default function ViewInput({ onSubmit, loading }) {
           <textarea
             value={view}
             onChange={(e) => setView(e.target.value)}
-            placeholder="e.g. I'm confident AMD will grow to 300 but no more than 400 by June 2028"
+            placeholder="e.g. I'm confident AMD will grow to 250 but no more than 300 by June 2028"
             rows={3}
             className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition resize-none pr-12"
           />

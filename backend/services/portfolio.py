@@ -1,7 +1,10 @@
 import io
+import logging
 import zipfile
 import xml.etree.ElementTree as ET
 import yfinance as yf
+
+_log = logging.getLogger(__name__)
 
 _NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
@@ -36,10 +39,13 @@ def _parse_sheet_rows(archive: zipfile.ZipFile, shared_strings: list[str]) -> li
     rows = []
     for row_el in root.findall(".//s:row", ns):
         cells: dict[int, str] = {}
+        max_col = -1
         for c in row_el.findall("s:c", ns):
             ref = c.get("r", "")
             col_letters = "".join(ch for ch in ref if ch.isalpha())
             col_idx = _col_letter_to_index(col_letters)
+            if col_idx > max_col:
+                max_col = col_idx
             t = c.get("t", "")
             v_el = c.find("s:v", ns)
             is_el = c.find("s:is", ns)
@@ -52,7 +58,6 @@ def _parse_sheet_rows(archive: zipfile.ZipFile, shared_strings: list[str]) -> li
                 cells[col_idx] = v_el.text
             else:
                 cells[col_idx] = ""
-        max_col = max(cells.keys(), default=-1)
         rows.append([cells.get(i, "") for i in range(max_col + 1)])
     return rows
 
@@ -81,6 +86,7 @@ _HEADERS_WANTED = {
     "Strike": "strike",
     "Underlying price": "underlying_price",
     "Currency": "currency",
+    "Value date": "value_date",
 }
 
 _NUMERIC_FIELDS = {"quantity", "open_price", "current_price", "pnl_sgd",
@@ -104,10 +110,12 @@ def parse_saxo_xlsx(file_bytes: bytes) -> list[dict]:
         if cell_str in _HEADERS_WANTED:
             col_index[cell_str] = i
 
+    # Resolve all column indices once — constant for the whole file
+    instr_idx = col_index.get("Instrument")
+    field_col: dict[str, int | None] = {h: col_index.get(h) for h in _HEADERS_WANTED}
+
     positions = []
     for row in rows[1:]:
-        # Get instrument value
-        instr_idx = col_index.get("Instrument")
         instrument = str(row[instr_idx]).strip() if instr_idx is not None and instr_idx < len(row) else ""
 
         # Skip empty rows and section header rows (contain parentheses like "Listed options (20)")
@@ -116,7 +124,7 @@ def parse_saxo_xlsx(file_bytes: bytes) -> list[dict]:
 
         pos: dict = {}
         for header, field in _HEADERS_WANTED.items():
-            idx = col_index.get(header)
+            idx = field_col[header]
             val = str(row[idx]).strip() if idx is not None and idx < len(row) else ""
             if field in _NUMERIC_FIELDS:
                 pos[field] = _safe_float(val)
@@ -179,22 +187,24 @@ def get_price_history(tickers: list[str], days: int = 7) -> tuple[list[str], dic
         if len(unique) == 1:
             df = yf.download(unique[0], period=fetch_period, interval="1d",
                              progress=False, auto_adjust=True)
-            closes_df = df["Close"].dropna().tail(days)
-            dates = [d.strftime("%Y-%m-%d") for d in closes_df.index]
-            prices = [_safe(v) for v in closes_df.tolist()]
-            return dates, {unique[0]: prices}
+            closes = df["Close"].dropna().tail(days)
+            dates = [d.strftime("%Y-%m-%d") for d in closes.index]
+            return dates, {unique[0]: [_safe(v) for v in closes.tolist()]}
 
+        # Multi-ticker: yf returns MultiIndex columns; df["Close"] is a DataFrame
+        # with tickers as columns. Use group_by="column" (default) — not group_by="ticker".
         df = yf.download(unique, period=fetch_period, interval="1d",
-                         progress=False, auto_adjust=True, group_by="ticker")
-        df_tail = df.tail(days)
-        dates = [d.strftime("%Y-%m-%d") for d in df_tail.index]
+                         progress=False, auto_adjust=True)
+        # Drop rows where ALL tickers are NaN (weekends/holidays), then take last N days
+        closes_df = df["Close"].dropna(how="all").tail(days)
+        dates = [d.strftime("%Y-%m-%d") for d in closes_df.index]
         result: dict[str, list[float | None]] = {}
         for ticker in unique:
             try:
-                closes = df_tail[ticker]["Close"].tolist()
-                result[ticker] = [_safe(v) for v in closes]
+                result[ticker] = [_safe(v) for v in closes_df[ticker].tolist()]
             except Exception:
                 result[ticker] = [None] * len(dates)
         return dates, result
-    except Exception:
+    except Exception as e:
+        _log.error("get_price_history failed: %s", e, exc_info=True)
         return [], {}

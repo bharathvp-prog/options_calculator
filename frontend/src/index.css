@@ -4,3 +4,77 @@ body {
   margin: 0;
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
 }
+
+/* ─── Light theme ─────────────────────────────────────────────────────────── */
+
+/* Base page background & text */
+html.light body,
+html.light .min-h-screen {
+  background-color: #f3f4f6;
+  color: #111827;
+}
+
+/* Hardcoded hex background colours */
+html.light .bg-\[\#0a0a0f\]   { background-color: #ffffff !important; }
+html.light .bg-\[\#0e0e12\]   { background-color: #ffffff !important; }
+html.light .bg-\[\#111117\]   { background-color: #f3f4f6 !important; }
+html.light .bg-\[\#1a1a2e\]   { background-color: #f9fafb !important; }
+
+/* bg-[#0a0a0f]/80 — nav blur backdrop */
+html.light .bg-\[\#0a0a0f\]\/80 { background-color: rgba(255,255,255,0.85) !important; }
+
+/* Translucent white backgrounds → translucent dark */
+html.light .bg-white\/\[0\.02\]  { background-color: rgba(0,0,0,0.025) !important; }
+html.light .bg-white\/\[0\.015\] { background-color: rgba(0,0,0,0.02)  !important; }
+html.light .bg-white\/\[0\.03\]  { background-color: rgba(0,0,0,0.04)  !important; }
+html.light .bg-white\/\[0\.04\]  { background-color: rgba(0,0,0,0.05)  !important; }
+html.light .bg-white\/\[0\.06\]  { background-color: rgba(0,0,0,0.06)  !important; }
+html.light .bg-white\/5          { background-color: rgba(0,0,0,0.05)  !important; }
+html.light .bg-white\/8          { background-color: rgba(0,0,0,0.07)  !important; }
+html.light .bg-white\/10         { background-color: rgba(0,0,0,0.08)  !important; }
+
+/* Borders: white/x → black/x (same opacity) */
+html.light .border-white\/\[0\.03\] { border-color: rgba(0,0,0,0.06)  !important; }
+html.light .border-white\/\[0\.04\] { border-color: rgba(0,0,0,0.07)  !important; }
+html.light .border-white\/\[0\.05\] { border-color: rgba(0,0,0,0.08)  !important; }
+html.light .border-white\/5         { border-color: rgba(0,0,0,0.08)  !important; }
+html.light .border-white\/8         { border-color: rgba(0,0,0,0.10)  !important; }
+html.light .border-white\/10        { border-color: rgba(0,0,0,0.12)  !important; }
+html.light .border-white\/12        { border-color: rgba(0,0,0,0.14)  !important; }
+html.light .border-white\/15        { border-color: rgba(0,0,0,0.15)  !important; }
+html.light .border-white\/20        { border-color: rgba(0,0,0,0.18)  !important; }
+html.light .border-white\/50        { border-color: rgba(0,0,0,0.35)  !important; }
+
+/* Text colours */
+html.light .text-white     { color: #111827 !important; }
+html.light .text-white\/50 { color: rgba(17,24,39,0.5) !important; }
+html.light .text-gray-300  { color: #374151 !important; }
+html.light .text-gray-400  { color: #4b5563 !important; }
+html.light .text-gray-500  { color: #6b7280 !important; }
+html.light .text-gray-600  { color: #9ca3af !important; }
+html.light .text-gray-700  { color: #d1d5db !important; }
+
+/* Divide lines */
+html.light .divide-white\/\[0\.03\] > * + * { border-color: rgba(0,0,0,0.06) !important; }
+
+/* Hover overrides — bg-white/[0.02] hover */
+html.light .hover\:bg-white\/\[0\.02\]:hover { background-color: rgba(0,0,0,0.04) !important; }
+html.light .hover\:bg-white\/\[0\.04\]:hover { background-color: rgba(0,0,0,0.06) !important; }
+html.light .hover\:border-white\/20:hover    { border-color: rgba(0,0,0,0.18)     !important; }
+
+/* Indigo accent hover borders */
+html.light .hover\:border-indigo-500\/30:hover  { border-color: rgba(99,102,241,0.35) !important; }
+html.light .hover\:border-violet-500\/30:hover  { border-color: rgba(139,92,246,0.35) !important; }
+
+/* Placeholder text in inputs */
+html.light input::placeholder,
+html.light textarea::placeholder { color: #9ca3af; }
+
+/* Focus rings already use indigo — keep as-is */
+
+/* Input backgrounds already covered by bg-white/5 above */
+
+/* Scrollbar (optional polish) */
+html.light ::-webkit-scrollbar              { background: #f3f4f6; }
+html.light ::-webkit-scrollbar-thumb        { background: #d1d5db; border-radius: 4px; }
+html.light ::-webkit-scrollbar-thumb:hover  { background: #9ca3af; }

@@ -12,6 +12,7 @@ from services.tickers import load_tickers, search_tickers
 from services.strategy import identify_strategy
 from services.payoff import OptionLeg, compute_payoff_table
 from services.portfolio import parse_saxo_xlsx, symbol_to_yf_ticker, get_price_history
+from services.validation import spread_validity_error
 
 load_dotenv()
 
@@ -92,6 +93,22 @@ class StrategyCompareRequest(BaseModel):
     sort_by: str = "ask"
 
 
+class CyclingPosition(BaseModel):
+    id: str
+    ticker: str
+    expiry: str
+    strike: float
+    premium: float
+    entry_date: str
+    units: int
+    locked: bool = False
+
+
+class CyclingDoc(BaseModel):
+    cash_secured_puts: list[CyclingPosition] = []
+    covered_calls: list[CyclingPosition] = []
+
+
 # ── Firestore ───────────────────────────────────────────────────────────────
 
 def get_firestore():
@@ -148,6 +165,7 @@ def strategy_compare(payload: StrategyCompareRequest, authorization: str = Heade
     horizons = pick_horizon_expiries(all_expiries)
     today_date = date.today()
     results = []
+    skipped = []
 
     for label, expiry in horizons.items():
         dte = (date.fromisoformat(expiry) - today_date).days
@@ -176,8 +194,18 @@ def strategy_compare(payload: StrategyCompareRequest, authorization: str = Heade
                         except Exception:
                             target_strike = df["strike"].median() # Safe fallback
 
-                df["strike_diff"] = (df["strike"] - target_strike).abs()
-                best_row = df.loc[df["strike_diff"].idxmin()].to_dict()
+                # Only consider rows that have a usable price for this leg side
+                price_col = "ask" if leg.side == "buy" else "bid"
+                df_priceable = df[df[price_col] > 0]
+                if df_priceable.empty:
+                    # Fall back to any row with a last traded price
+                    df_priceable = df[df["lastPrice"] > 0]
+                if df_priceable.empty:
+                    valid = False
+                    break
+                df_priceable = df_priceable.copy()
+                df_priceable["strike_diff"] = (df_priceable["strike"] - target_strike).abs()
+                best_row = df_priceable.loc[df_priceable["strike_diff"].idxmin()].to_dict()
 
                 def safe_val(val, default_val, cast_type):
                     try:
@@ -209,10 +237,18 @@ def strategy_compare(payload: StrategyCompareRequest, authorization: str = Heade
                 break
 
             leg_results.append({**cheapest, "side": leg.side, "qty": leg.qty})
-            price = cheapest["ask"] if leg.side == "buy" else cheapest["bid"]
+            if leg.side == "buy":
+                price = cheapest["ask"] if cheapest["ask"] > 0 else cheapest["lastPrice"]
+            else:
+                price = cheapest["bid"] if cheapest["bid"] > 0 else cheapest["lastPrice"]
             total_cost += price * leg.qty if leg.side == "buy" else -price * leg.qty
 
         if not valid:
+            continue
+
+        err = spread_validity_error(leg_results)
+        if err:
+            skipped.append({"label": label, "expiry": expiry, "reason": err})
             continue
 
         net_debit = round(total_cost, 4)
@@ -251,14 +287,21 @@ def strategy_compare(payload: StrategyCompareRequest, authorization: str = Heade
         })
 
     if not results:
-        raise HTTPException(status_code=404, detail="No options found for any time horizon")
+        reasons = "; ".join(sorted(set(s["reason"] for s in skipped))) if skipped else "unknown"
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No priceable contracts found for any horizon. {reasons}. "
+                "Try strike targets closer to the current price."
+            ),
+        )
 
     valid_cpd = [r for r in results if r.get("cost_per_day") and r["cost_per_day"] > 0]
     best_expiry = min(valid_cpd, key=lambda r: r["cost_per_day"])["expiry"] if valid_cpd else None
     for r in results:
         r["best_value"] = (r["expiry"] == best_expiry)
 
-    return {"ticker": payload.ticker.upper(), "horizons": results}
+    return {"ticker": payload.ticker.upper(), "horizons": results, "skipped": skipped}
 
 
 @app.get("/api/tickers/search")
@@ -495,3 +538,112 @@ def portfolio_refresh(authorization: str = Header(default=None)):
     refreshed_at = datetime.now(timezone.utc).isoformat()
     doc_ref.set({"uploaded_at": refreshed_at, "positions": positions})
     return {"uploaded_at": refreshed_at, "positions": positions}
+
+
+# ── Options chain helpers ────────────────────────────────────────────────────
+
+@app.get("/api/options/strikes")
+def get_strikes(
+    ticker: str = Query(...),
+    expiry: str = Query(...),
+    option_type: str = Query(...),
+):
+    try:
+        df = get_options_for_expiry(yf.Ticker(ticker.upper()), expiry, option_type)
+        if df.empty:
+            raise HTTPException(status_code=404, detail="No options found for this expiry")
+        strikes = sorted(df["strike"].unique().tolist())
+        return {"strikes": strikes}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/options/contract")
+def get_contract(
+    ticker: str = Query(...),
+    expiry: str = Query(...),
+    strike: float = Query(...),
+    option_type: str = Query(...),
+):
+    try:
+        df = get_options_for_expiry(yf.Ticker(ticker.upper()), expiry, option_type)
+        if df.empty:
+            raise HTTPException(status_code=404, detail="No options found for this expiry")
+        matching = df[df["strike"] == strike]
+        if matching.empty:
+            raise HTTPException(status_code=404, detail=f"No contract found for strike {strike}")
+        row = matching.iloc[0]
+
+        import math
+        def safe(v, cast=float):
+            try:
+                f = cast(v)
+                return None if (isinstance(f, float) and math.isnan(f)) else f
+            except Exception:
+                return None
+
+        bid = safe(row["bid"])
+        ask = safe(row["ask"])
+        last = safe(row["lastPrice"])
+        bid = bid if bid and bid > 0 else None
+        ask = ask if ask and ask > 0 else None
+        last = last if last and last > 0 else None
+        mid = round((bid + ask) / 2, 4) if bid and ask else None
+        premium = mid if mid is not None else last
+
+        return {
+            "bid": bid,
+            "ask": ask,
+            "lastPrice": last,
+            "mid": mid,
+            "premium": premium,
+            "premium_source": "mid" if mid is not None else "ltp",
+            "impliedVolatility": safe(row["impliedVolatility"]),
+            "volume": safe(row["volume"], int) or 0,
+            "openInterest": safe(row["openInterest"], int) or 0,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Cycling endpoints ────────────────────────────────────────────────────────
+
+@app.get("/api/cycling")
+def cycling_get(authorization: str = Header(default=None)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        return {"cash_secured_puts": [], "covered_calls": []}
+
+    doc = db.collection("cycling").document(uid).get()
+    if not doc.exists:
+        return {"cash_secured_puts": [], "covered_calls": []}
+
+    data = doc.to_dict()
+    return {
+        "cash_secured_puts": data.get("cash_secured_puts", []),
+        "covered_calls": data.get("covered_calls", []),
+    }
+
+
+@app.post("/api/cycling")
+def cycling_save(payload: CyclingDoc, authorization: str = Header(default=None)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+
+    db.collection("cycling").document(uid).set({
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "cash_secured_puts": [p.dict() for p in payload.cash_secured_puts],
+        "covered_calls": [p.dict() for p in payload.covered_calls],
+    })
+    return {"ok": True}

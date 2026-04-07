@@ -6,6 +6,7 @@ import AppShell from "./components/AppShell"
 import DashboardPage from "./components/DashboardPage"
 import OptionsPage from "./components/OptionsPage"
 import PortfolioPage from "./components/PortfolioPage"
+import OptionsCyclingPage from "./components/OptionsCyclingPage"
 
 function ProtectedShell({ children }) {
   return (
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/app" element={<ProtectedShell><DashboardPage /></ProtectedShell>} />
         <Route path="/app/options" element={<ProtectedShell><OptionsPage /></ProtectedShell>} />
         <Route path="/app/portfolio" element={<ProtectedShell><PortfolioPage /></ProtectedShell>} />
+        <Route path="/app/cycling" element={<ProtectedShell><OptionsCyclingPage /></ProtectedShell>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

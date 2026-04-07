@@ -2,6 +2,7 @@ import { useState } from "react"
 import { Link, NavLink, useNavigate } from "react-router-dom"
 import { signOut } from "firebase/auth"
 import { auth } from "../firebase"
+import { toggleTheme, getStoredTheme } from "../lib/theme.js"
 
 const NAV_ITEMS = [
   {
@@ -24,19 +25,33 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    key: "cycling",
+    label: "Options Cycling",
+    href: "/app/cycling",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+      </svg>
+    ),
+  },
 ]
 
-const COMING_SOON = [
-  { key: "screener", label: "Screener" },
-]
+const COMING_SOON = []
 
 export default function AppShell({ children }) {
   const navigate = useNavigate()
   const [collapsed, setCollapsed] = useState(false)
+  const [theme, setTheme] = useState(getStoredTheme)
 
   const handleLogout = async () => {
     await signOut(auth)
     navigate("/")
+  }
+
+  const handleToggleTheme = () => {
+    const next = toggleTheme()
+    setTheme(next)
   }
 
   return (
@@ -51,7 +66,7 @@ export default function AppShell({ children }) {
         <div className="flex items-center gap-2.5 px-3.5 py-4 border-b border-white/5">
           <Link to="/app" className="flex items-center gap-2.5 min-w-0">
             <div className="w-7 h-7 rounded-lg bg-indigo-500 flex items-center justify-center shrink-0">
-              <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-white">
+              <svg viewBox="0 0 24 24" fill="white" className="w-4 h-4">
                 <path d="M2.25 2.25a.75.75 0 000 1.5h1.386c.17 0 .318.114.362.278l2.558 9.592a3.752 3.752 0 00-2.806 3.63c0 .414.336.75.75.75h15.75a.75.75 0 000-1.5H5.378A2.25 2.25 0 017.5 15h11.218a.75.75 0 00.674-.421 60.358 60.358 0 002.96-7.228.75.75 0 00-.525-.965A60.864 60.864 0 005.68 4.509l-.232-.867A1.875 1.875 0 003.636 2.25H2.25z" />
               </svg>
             </div>
@@ -127,6 +142,25 @@ export default function AppShell({ children }) {
           {!collapsed && auth.currentUser?.email && (
             <p className="text-xs text-gray-700 truncate px-2.5 pb-1">{auth.currentUser.email}</p>
           )}
+          {/* Theme toggle */}
+          <button
+            onClick={handleToggleTheme}
+            className={`flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-sm text-gray-600 hover:text-gray-300 hover:bg-white/[0.04] transition ${
+              collapsed ? "justify-center" : ""
+            }`}
+            title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+          >
+            {theme === "light" ? (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="w-4 h-4 shrink-0">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75 9.75 9.75 0 018.25 6 9.718 9.718 0 019 2.248a9.75 9.75 0 0012.752 12.754z" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="w-4 h-4 shrink-0">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+              </svg>
+            )}
+            {!collapsed && <span>{theme === "light" ? "Dark mode" : "Light mode"}</span>}
+          </button>
           <button
             onClick={handleLogout}
             className={`flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-sm text-gray-600 hover:text-gray-300 hover:bg-white/[0.04] transition ${
