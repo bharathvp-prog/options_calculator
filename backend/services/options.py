@@ -1,6 +1,9 @@
+import logging
 import yfinance as yf
 import pandas as pd
 from datetime import date, timedelta
+
+logger = logging.getLogger(__name__)
 
 HORIZON_TARGETS = [
     ("1 month", 30),

@@ -1,3 +1,5 @@
+import ReactECharts from "echarts-for-react"
+
 const fmt = (n) => (n == null ? "—" : `$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`)
 
 export default function PayoffCalculator({ horizon, strategyName, ticker }) {
@@ -8,8 +10,6 @@ export default function PayoffCalculator({ horizon, strategyName, ticker }) {
   const entries = Object.entries(payoff_at)
     .map(([price, pnl]) => [parseFloat(price), pnl])
     .sort((a, b) => a[0] - b[0])
-
-  const maxAbs = Math.max(...entries.map(([, pnl]) => Math.abs(pnl)), 1)
 
   return (
     <div className="bg-white/[0.02] border border-white/8 rounded-2xl overflow-hidden">
@@ -54,61 +54,78 @@ export default function PayoffCalculator({ horizon, strategyName, ticker }) {
         </div>
       </div>
 
-      {/* P&L table with bar visualization */}
-      <div className="px-6 py-4">
-        <h3 className="text-xs font-medium text-gray-600 uppercase tracking-wider mb-3">P&L at expiry by stock price</h3>
-        <div className="flex flex-col gap-1.5">
-          {entries.map(([price, pnl], i) => {
-            const isBreakeven = breakevens?.some((b) => Math.abs(b - price) < (entries[1]?.[0] - entries[0]?.[0]) * 0.6)
-            const barWidth = Math.abs(pnl) / maxAbs
-            const isProfit = pnl > 0
-            const isLoss = pnl < 0
-
-            return (
-              <div key={i} className={`flex items-center gap-3 py-1.5 px-2 rounded-lg transition ${isBreakeven ? "bg-white/[0.04] border border-white/8" : ""}`}>
-                <span className="w-20 text-xs text-gray-500 text-right font-mono shrink-0">
-                  ${price.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-                </span>
-
-                {/* Bar */}
-                <div className="flex-1 flex items-center gap-1 h-5">
-                  {isProfit ? (
-                    <div className="flex-1 flex items-center">
-                      <div className="w-1/2" />
-                      <div
-                        className="h-3.5 rounded-r-sm bg-emerald-500/50 transition-all"
-                        style={{ width: `${barWidth * 50}%` }}
-                      />
-                    </div>
-                  ) : isLoss ? (
-                    <div className="flex-1 flex items-center justify-end">
-                      <div
-                        className="h-3.5 rounded-l-sm bg-rose-500/40 transition-all"
-                        style={{ width: `${barWidth * 50}%` }}
-                      />
-                      <div className="w-1/2" />
-                    </div>
-                  ) : (
-                    <div className="flex-1 flex items-center">
-                      <div className="w-1/2 border-r border-white/20 h-3.5" />
-                    </div>
-                  )}
-                </div>
-
-                <span className={`w-24 text-right text-xs font-medium shrink-0 ${isProfit ? "text-emerald-400" : isLoss ? "text-rose-400" : "text-gray-400"}`}>
-                  {pnl >= 0 ? "+" : "−"}{fmt(Math.abs(pnl))}
-                </span>
-
-                {isBreakeven && (
-                  <span className="text-[10px] font-semibold text-white/50 bg-white/5 border border-white/10 rounded px-1.5 py-0.5 shrink-0">
-                    breakeven
-                  </span>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </div>
+      {/* P&L chart */}
+      {(() => {
+        const stride = entries[1]?.[0] - entries[0]?.[0]
+        const breakevenSet = new Set(
+          breakevens?.flatMap(b =>
+            entries
+              .filter(([price]) => Math.abs(b - price) < (stride ?? 1) * 0.6)
+              .map(([price]) => price)
+          ) ?? []
+        )
+        const chartOption = {
+          backgroundColor: "transparent",
+          grid: { top: 8, right: 90, bottom: 8, left: 8, containLabel: true },
+          xAxis: {
+            type: "value",
+            axisLabel: {
+              color: "rgba(156,163,175,0.7)",
+              fontSize: 10,
+              formatter: v => v === 0 ? "$0" : `${v > 0 ? "+" : "−"}$${Math.abs(v).toLocaleString()}`,
+            },
+            splitLine: { lineStyle: { color: "rgba(255,255,255,0.05)" } },
+            axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
+          },
+          yAxis: {
+            type: "category",
+            data: entries.map(([price]) => `$${price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`),
+            axisLabel: { color: "rgba(156,163,175,0.7)", fontSize: 10 },
+            axisLine: { show: false },
+            axisTick: { show: false },
+          },
+          tooltip: {
+            trigger: "item",
+            backgroundColor: "#1a1a2e",
+            borderColor: "rgba(255,255,255,0.1)",
+            textStyle: { color: "#e5e7eb", fontSize: 12 },
+            formatter: params => {
+              const [price, pnl] = entries[params.dataIndex]
+              const isBreak = breakevenSet.has(price)
+              return `<b>Stock @ $${price.toLocaleString()}</b><br/>P&amp;L: ${pnl >= 0 ? "+" : ""}$${pnl.toLocaleString()}${isBreak ? "<br/><i style='color:rgba(255,255,255,0.5)'>~breakeven</i>" : ""}`
+            },
+          },
+          series: [{
+            type: "bar",
+            data: entries.map(([price, pnl]) => ({
+              value: pnl,
+              itemStyle: {
+                color: pnl > 0 ? "rgba(52,211,153,0.65)" : pnl < 0 ? "rgba(251,113,133,0.55)" : "rgba(156,163,175,0.4)",
+                borderRadius: pnl >= 0 ? [0, 3, 3, 0] : [3, 0, 0, 3],
+                borderColor: breakevenSet.has(price) ? "rgba(255,255,255,0.3)" : "transparent",
+                borderWidth: breakevenSet.has(price) ? 1 : 0,
+              },
+            })),
+            label: {
+              show: true,
+              position: "right",
+              formatter: params => {
+                const pnl = entries[params.dataIndex][1]
+                return `${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toLocaleString()}`
+              },
+              color: params => entries[params.dataIndex][1] >= 0 ? "#34d399" : "#fb7185",
+              fontSize: 10,
+            },
+          }],
+        }
+        const chartHeight = Math.max(240, entries.length * 30)
+        return (
+          <div className="px-6 py-4">
+            <h3 className="text-xs font-medium text-gray-600 uppercase tracking-wider mb-3">P&L at expiry by stock price</h3>
+            <ReactECharts option={chartOption} style={{ height: chartHeight }} opts={{ renderer: "svg" }} />
+          </div>
+        )
+      })()}
 
       <div className="px-6 py-3 border-t border-white/5 text-xs text-gray-700">
         P&L shown per contract (100 shares). Assumes held to expiry. Does not account for early exercise or dividends.

@@ -7,6 +7,8 @@ import DashboardPage from "./components/DashboardPage"
 import OptionsPage from "./components/OptionsPage"
 import PortfolioPage from "./components/PortfolioPage"
 import OptionsCyclingPage from "./components/OptionsCyclingPage"
+import CashPage from "./components/CashPage"
+import HistoricalPerformancePage from "./components/HistoricalPerformancePage"
 
 function ProtectedShell({ children }) {
   return (
@@ -26,6 +28,8 @@ export default function App() {
         <Route path="/app/options" element={<ProtectedShell><OptionsPage /></ProtectedShell>} />
         <Route path="/app/portfolio" element={<ProtectedShell><PortfolioPage /></ProtectedShell>} />
         <Route path="/app/cycling" element={<ProtectedShell><OptionsCyclingPage /></ProtectedShell>} />
+        <Route path="/app/cash" element={<ProtectedShell><CashPage /></ProtectedShell>} />
+        <Route path="/app/performance" element={<ProtectedShell><HistoricalPerformancePage /></ProtectedShell>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

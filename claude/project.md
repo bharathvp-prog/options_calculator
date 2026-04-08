@@ -3,7 +3,9 @@
 ## What this project is
 Oxas is an AI-assisted options strategy tool. Users describe a market view in plain English (e.g. "I'm confident AMD will grow to 250 but no more than 300 by June 2028"), the app identifies the right strategy, then scans live Yahoo Finance data to find the cheapest matching contracts. Results are compared across expiry horizons (1mo / 3mo / 6mo / 1yr / 2yr / latest) with cost-per-day and payoff analytics.
 
-The app also includes a **Portfolio** feature: users upload a Saxo Bank `.xlsx` positions export, which is parsed and stored in Firestore. The portfolio page shows grouped positions (options/stocks), historical 7-day trend tables with day-over-day color coding, a 2W change summary column, and a 14-day inline SVG chart.
+The app also includes a **Portfolio** feature: users upload a Saxo Bank `.xlsx` positions export, which is parsed and stored in Firestore. The portfolio page shows grouped positions (options/stocks), historical 14-day trend tables with day-over-day color coding, a 2W change summary column, and a 14-day inline SVG chart.
+
+An **Options Cycling** page analyses uncovered stock positions to identify covered call writing opportunities.
 
 ## Stack
 
@@ -38,6 +40,8 @@ options_calculator/
 │   │   │   ├── DashboardPage.jsx      # portfolio widget + sparklines
 │   │   │   ├── OptionsPage.jsx        # main strategy builder page
 │   │   │   ├── PortfolioPage.jsx      # portfolio upload, table, trend, chart
+│   │   │   ├── OptionsCyclingPage.jsx # uncovered calls / covered call cycling analysis
+│   │   │   ├── CashPage.jsx           # cash/uninvested balance tracking
 │   │   │   ├── ViewInput.jsx          # NL market view input (+ voice)
 │   │   │   ├── StrategyProposal.jsx   # proposed strategy + qty controls
 │   │   │   ├── ComparisonView.jsx     # multi-horizon results table
@@ -87,15 +91,17 @@ options_calculator/
 ## User flow (Portfolio)
 1. User uploads a Saxo Bank positions `.xlsx` → `POST /api/portfolio/upload`
 2. Backend parses the file, maps symbols to yfinance tickers, persists to Firestore
-3. `GET /api/portfolio` loads positions on subsequent visits
+   - Each position gets a `has_options` field (bool): always `True` for Stock Options; for Stocks, set via `bool(yf.Ticker(yf_ticker).options)` (deduplicated — one call per unique ticker)
+   - 14-day price history computed via `get_price_history` and cached in Firestore at upload time
+3. `GET /api/portfolio` loads positions + cached price history on subsequent visits — single round-trip, no separate price fetch
 4. `PortfolioPage` groups positions: Listed options → Stocks
-5. Trend view: `GET /api/portfolio/prices?days=14` fetches 14-day price history
+5. Trend view: 14-day price history embedded in `GET /api/portfolio` response (`price_dates` / `price_data`) — pre-computed during upload/refresh, no extra API call on page load
    - Options: scaled by ratio of historic underlying price to `pos.underlying_price`
    - Stocks: scaled by ratio of historic close to last yfinance close (anchors to Saxo market value)
    - Day-over-day color coding (emerald = up, rose = down, gray = first day)
    - "2W Chg (SGD)" summary column (emerald if ≥0, rose if <0)
 6. 14-day inline SVG area chart shows total portfolio value over time
-7. "Refresh prices" → `POST /api/portfolio/refresh` updates underlying prices from yfinance and re-persists
+7. "Refresh prices" → `POST /api/portfolio/refresh` re-fetches yfinance prices, re-computes `has_options`, re-fetches 14-day price history, and returns all updated data in a single response
 
 ## API endpoints
 | Method | Path | Description |
@@ -105,10 +111,9 @@ options_calculator/
 | POST | `/api/strategy/identify` | NL view → strategy proposal |
 | POST | `/api/strategy/compare` | Strategy legs → multi-horizon results + payoff |
 | POST | `/api/search` | Manual mode: cheapest contracts per leg |
-| POST | `/api/portfolio/upload` | Upload Saxo xlsx, parse + persist positions |
-| GET  | `/api/portfolio` | Fetch stored positions for current user |
-| GET  | `/api/portfolio/prices?days=14` | Fetch N-day price history for portfolio tickers |
-| POST | `/api/portfolio/refresh` | Refresh latest prices from yfinance, re-persist |
+| POST | `/api/portfolio/upload` | Upload Saxo xlsx, parse + persist positions (includes has_options + 14-day price cache) |
+| GET  | `/api/portfolio` | Fetch stored positions + cached 14-day price history for current user |
+| POST | `/api/portfolio/refresh` | Re-fetch yfinance prices + has_options + 14-day price history, re-persist |
 
 ### POST /api/strategy/identify
 ```json
@@ -168,14 +173,17 @@ options_calculator/
 // Response: legs[], net_debit, total_ask, total_sell_bid, total_mid, forced_expiry
 ```
 
-### GET /api/portfolio/prices
+### GET /api/portfolio
 ```json
 // Response
 {
-  "dates": ["2026-03-18", "2026-03-19", ...],   // N trading days
-  "prices": { "AMD": [145.2, 147.8, ...], "AAPL": [null, 198.5, ...] }
+  "positions": [...],           // all positions; Stock positions include has_options: true/false
+  "uploaded_at": "2026-04-08T12:00:00+00:00",
+  "price_dates": ["2026-03-24", "2026-03-25", ...],   // 14 trading days
+  "price_data": { "AMD": [145.2, 147.8, ...], "AAPL": [null, 198.5, ...] }
 }
 // null = no data for that date (weekend/holiday gap)
+// price_dates / price_data are [] / {} for portfolios not yet refreshed since caching was added
 ```
 
 ## Strategies identified by the rule-based parser
@@ -206,6 +214,23 @@ options_calculator/
 **`get_price_history(tickers, days=7) -> tuple[list[str], dict[str, list[float | None]]]`**
 - Returns `(dates, prices)`: `dates` = list of N trading day strings, `prices` = `{ticker: [close, ...]}` with `None` for missing days
 - Fetches period `days + 7` to cover weekends/holidays, then takes last `days` business days
+
+**`has_options` field** — not set by the parser; added by `portfolio_upload` and `portfolio_refresh`:
+- `"Stock Option"` positions → `has_options = True`
+- `"Stock"` positions → `bool(yf.Ticker(yf_ticker).options)`, deduplicated per unique ticker
+- Used by `OptionsCyclingPage` to filter uncovered call candidates without any extra API calls on page load
+
+## Ticker autocomplete (`services/tickers.py`)
+
+**Remote source:** `https://www.sec.gov/files/company_tickers.json` — SEC EDGAR company tickers, ~13,000 US-listed companies, free, JSON. Requires `User-Agent` header or requests may be blocked.
+
+**Cache:** `backend/data/tickers_cache.json`, 7-day TTL. Delete to force a fresh fetch on next restart.
+
+**Fallback:** ~100 hardcoded popular tickers used if remote fetch fails and no cache exists.
+
+**`load_tickers()`**: Called once at startup. Priority: valid cache → SEC EDGAR remote → fallback list.
+
+**`search_tickers(query, limit=10)`**: Symbol prefix match first, then name substring match.
 
 ## Historic MV scaling (PortfolioPage)
 

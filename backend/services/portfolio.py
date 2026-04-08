@@ -4,7 +4,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 import yfinance as yf
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 _NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
@@ -203,8 +203,9 @@ def get_price_history(tickers: list[str], days: int = 7) -> tuple[list[str], dic
             try:
                 result[ticker] = [_safe(v) for v in closes_df[ticker].tolist()]
             except Exception:
+                logger.warning("Price data unavailable for %s, filling with None.", ticker, exc_info=True)
                 result[ticker] = [None] * len(dates)
         return dates, result
     except Exception as e:
-        _log.error("get_price_history failed: %s", e, exc_info=True)
+        logger.error("get_price_history failed: %s", e, exc_info=True)
         return [], {}

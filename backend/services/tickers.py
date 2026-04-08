@@ -1,7 +1,10 @@
 import json
+import logging
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 CACHE_FILE = Path(__file__).parent.parent / "data" / "tickers_cache.json"
 CACHE_TTL_DAYS = 7
@@ -118,9 +121,9 @@ def _load_from_cache() -> list[dict] | None:
         updated_at = datetime.fromisoformat(data["updated_at"])
         if datetime.now() - updated_at < timedelta(days=CACHE_TTL_DAYS):
             return data["tickers"]
-        print("Ticker cache is stale — will refresh.")
+        logger.info("Ticker cache is stale — refreshing from remote.")
     except Exception:
-        pass
+        logger.warning("Failed to read ticker cache; will re-fetch.", exc_info=True)
     return None
 
 
@@ -133,30 +136,22 @@ def _save_to_cache(tickers: list[dict]):
 
 
 def _fetch_remote() -> list[dict]:
-    """Fetch from NASDAQ trader files via plain HTTP."""
-    sources = [
-        # (url, symbol_col, name_col, test_issue_col)
-        ("http://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt", 0, 1, 3),
-        ("http://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt", 0, 1, 6),
-    ]
+    """Fetch from SEC EDGAR company tickers — free, JSON, ~13k US-listed companies."""
+    resp = requests.get(
+        "https://www.sec.gov/files/company_tickers.json",
+        timeout=15,
+        headers={"User-Agent": "oxas-options-app/1.0 contact@example.com"},
+    )
+    resp.raise_for_status()
+    data = resp.json()
     seen: set[str] = set()
     results: list[dict] = []
-    for url, sym_col, name_col, test_col in sources:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        for line in resp.text.splitlines():
-            parts = line.strip().split("|")
-            if len(parts) <= max(sym_col, name_col):
-                continue
-            symbol = parts[sym_col].strip()
-            name = parts[name_col].strip()
-            if not symbol or symbol in ("Symbol", "ACT Symbol", "File Creation Time"):
-                continue
-            if len(parts) > test_col and parts[test_col].strip() == "Y":
-                continue
-            if symbol not in seen:
-                seen.add(symbol)
-                results.append({"symbol": symbol, "name": name})
+    for entry in data.values():
+        symbol = str(entry.get("ticker", "")).strip().upper()
+        name = str(entry.get("title", "")).strip()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            results.append({"symbol": symbol, "name": name})
     return sorted(results, key=lambda x: x["symbol"])
 
 
@@ -167,23 +162,23 @@ def load_tickers():
     cached = _load_from_cache()
     if cached:
         _tickers = cached
-        print(f"Loaded {len(_tickers)} tickers from cache.")
+        logger.info("Loaded %d tickers from cache.", len(_tickers))
         return
 
     # 2. Try remote fetch
-    print("Fetching ticker list from NASDAQ...")
+    logger.info("Fetching ticker list from SEC EDGAR...")
     try:
         fetched = _fetch_remote()
         if fetched:
             _tickers = fetched
             _save_to_cache(_tickers)
-            print(f"Loaded {len(_tickers)} tickers and saved to cache.")
+            logger.info("Loaded %d tickers from remote and saved to cache.", len(_tickers))
             return
     except Exception as e:
-        print(f"Remote ticker fetch failed: {e}")
+        logger.warning("Remote ticker fetch failed: %s", e, exc_info=True)
 
     # 3. Fall back to bundled list
-    print("Using built-in fallback ticker list.")
+    logger.warning("Using built-in fallback ticker list (%d tickers).", len(_FALLBACK))
     _tickers = sorted(_FALLBACK, key=lambda x: x["symbol"])
 
 

@@ -13,6 +13,7 @@ from services.strategy import (
     extract_prices,
     extract_date,
     detect_sentiment,
+    has_cap,
     identify_strategy,
 )
 
@@ -67,6 +68,18 @@ class TestExtractPrices:
 
     def test_no_prices(self):
         assert extract_prices("AMD will make a big move by June 2026") == []
+
+    def test_year_boundary_1900_skipped(self):
+        """1900 is the lower bound of the year-exclusion range and is not treated as a price."""
+        assert 1900.0 not in extract_prices("the company was founded in 1900")
+
+    def test_year_boundary_2100_skipped(self):
+        """2100 is the upper bound of the year-exclusion range and is not treated as a price."""
+        assert 2100.0 not in extract_prices("AMD will reach 2100 by end of 2030")
+
+    def test_value_just_below_year_range_included(self):
+        """1899 is below the year-exclusion range and is treated as a price."""
+        assert 1899.0 in extract_prices("stock hit 1899")
 
     def test_decimal_price(self):
         result = extract_prices("AAPL at $182.50 heading to $220.00 by 2026")
@@ -142,6 +155,46 @@ class TestDetectSentiment:
 
     def test_neutral_stable(self):
         assert detect_sentiment("MSFT will remain stable sideways in 2026") == "neutral"
+
+    def test_no_matching_keywords_defaults_to_bullish(self):
+        """When no sentiment keywords match any category, the function defaults to 'bullish'."""
+        assert detect_sentiment("XYZ will do something by 2026") == "bullish"
+
+
+# ── Cap detection ────────────────────────────────────────────────────────────
+
+class TestHasCap:
+    def test_no_more_than_returns_true(self):
+        """'no more than' triggers cap detection."""
+        assert has_cap("AMD will grow to 300 but no more than 400 by 2026") is True
+
+    def test_limited_upside_returns_true(self):
+        """'limited upside' triggers cap detection."""
+        assert has_cap("AAPL will rise to 200 with limited upside") is True
+
+    def test_capped_at_returns_true(self):
+        """'capped at' triggers cap detection."""
+        assert has_cap("NVDA gain is capped at 500") is True
+
+    def test_not_above_returns_true(self):
+        """'not above' triggers cap detection."""
+        assert has_cap("TSLA should be not above 300") is True
+
+    def test_at_most_returns_true(self):
+        """'at most' triggers cap detection."""
+        assert has_cap("I think at most AMD reaches 200") is True
+
+    def test_wont_exceed_returns_true(self):
+        """'won't exceed' triggers cap detection."""
+        assert has_cap("AAPL won't exceed 250 by year end") is True
+
+    def test_no_cap_keywords_returns_false(self):
+        """Sentence with no cap vocabulary returns False."""
+        assert has_cap("AMD will grow strongly by June 2026") is False
+
+    def test_case_insensitive(self):
+        """Cap detection is case-insensitive."""
+        assert has_cap("NO MORE THAN 400") is True
 
 
 # ── Full strategy identification ─────────────────────────────────────────────
@@ -243,6 +296,14 @@ class TestIdentifyStrategy:
         assert result["strategy_name"] == "Long Straddle"
         assert result["ticker"] == "AMD"
 
+    def test_volatile_single_price_returns_straddle_not_strangle(self):
+        """Volatile sentiment with only 1 price produces a Straddle, not a Strangle (which needs 2 prices)."""
+        result = identify_strategy("TSLA will swing by $150 after earnings in January 2026")
+        assert result["strategy_name"] == "Long Straddle"
+        assert len(result["legs"]) == 2
+        types = {l["option_type"] for l in result["legs"]}
+        assert types == {"call", "put"}
+
     # ── Long Strangle ─────────────────────────────────────────────────────────
 
     def test_long_strangle_two_prices(self):
@@ -280,6 +341,16 @@ class TestIdentifyStrategy:
     def test_iron_condor_sideways(self):
         result = identify_strategy("AAPL will remain stable sideways around 220 through March 2026")
         assert result["strategy_name"] == "Iron Condor"
+
+    def test_iron_condor_three_prices_uses_only_first_two(self):
+        """With 3 prices and neutral sentiment, only the two lowest are used; the third is ignored."""
+        result = identify_strategy("AAPL will stay flat between 180 200 and 220 through March 2026")
+        assert result["strategy_name"] == "Iron Condor"
+        sell_put  = next(l for l in result["legs"] if l["option_type"] == "put"  and l["side"] == "sell")
+        sell_call = next(l for l in result["legs"] if l["option_type"] == "call" and l["side"] == "sell")
+        # sorted(prices)[:2] = [180, 200] — third price (220) is discarded
+        assert sell_put["strike_hint"]  == 180.0
+        assert sell_call["strike_hint"] == 200.0
 
     # ── Error cases ───────────────────────────────────────────────────────────
 

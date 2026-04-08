@@ -56,6 +56,24 @@ function fmt(val, decimals = 2) {
   })
 }
 
+function positionTicker(p) {
+  if (p.asset_type === "Stock Option") {
+    return p.symbol?.split("/")[0]?.replace("_US", "") ?? ""
+  }
+  const parts = (p.symbol || "").split(":")
+  const base = parts[0]
+  const suffix = (parts[1] || "").toLowerCase()
+  if (suffix === "xhkg") return ((base.replace(/^0+/, "") || "0").padStart(4, "0")) + ".HK"
+  if (suffix === "xses") return base + ".SI"
+  return base
+}
+
+function formatMonth(isoYM) {
+  const [y, m] = isoYM.split('-')
+  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  return `${names[parseInt(m, 10) - 1]} ${y}`
+}
+
 function computeRow(row) {
   const { strike, premium, units, entry_date, expiry } = row
   const cash_aside = units * 100 * strike
@@ -148,8 +166,8 @@ function TickerSearch({ value, onChange, onSelect }) {
 
 // ── Add position form ─────────────────────────────────────────────────────────
 
-function AddForm({ optionType, onAdd, onCancel }) {
-  const [ticker, setTicker] = useState("")
+function AddForm({ optionType, onAdd, onCancel, initialTicker = "" }) {
+  const [ticker, setTicker] = useState(initialTicker)
   const [expiries, setExpiries] = useState([])
   const [expiry, setExpiry] = useState("")
   const [strikes, setStrikes] = useState([])
@@ -161,19 +179,26 @@ function AddForm({ optionType, onAdd, onCancel }) {
   const [loadingStrikes, setLoadingStrikes] = useState(false)
   const [loadingContract, setLoadingContract] = useState(false)
   const [error, setError] = useState("")
+  const [underlyingPrice, setUnderlyingPrice] = useState(null)
 
   const onTickerSelect = async (sym) => {
-    setExpiry(""); setStrikes([]); setStrike(""); setContractData(null); setError("")
+    setExpiry(""); setStrikes([]); setStrike(""); setContractData(null); setError(""); setUnderlyingPrice(null)
     setLoadingExpiries(true)
     try {
       const data = await apiFetch(`/api/options/expiries?ticker=${sym}`)
       setExpiries(data.expiries || [])
+      setUnderlyingPrice(data.current_price ?? null)
     } catch (e) {
       setError(`Could not fetch expiries: ${e.message}`)
     } finally {
       setLoadingExpiries(false)
     }
   }
+
+  // Auto-fetch expiries when pre-filled with a ticker from "Plan Cover"
+  useEffect(() => {
+    if (initialTicker) onTickerSelect(initialTicker)
+  }, [])
 
   const onExpiryChange = async (e) => {
     const val = e.target.value
@@ -241,6 +266,9 @@ function AddForm({ optionType, onAdd, onCancel }) {
         <div className="flex flex-col gap-1">
           <label className="text-[10px] text-gray-500 uppercase tracking-wider">Ticker</label>
           <TickerSearch value={ticker} onChange={setTicker} onSelect={onTickerSelect} />
+          <p className="text-xs text-gray-500 h-4">
+            {underlyingPrice != null && <>Current: <span className="text-white font-medium">${fmt(underlyingPrice, 2)}</span></>}
+          </p>
         </div>
 
         {/* Expiry */}
@@ -401,7 +429,7 @@ const BASE_COLS = [
   { key: "actions",     label: ""             },
 ]
 
-function CyclingTable({ rows, showType, onEdit, onLock, onDelete }) {
+function CyclingTable({ rows, showType, onEdit, onLock, onDelete, readOnly = false }) {
   const columns = showType
     ? [{ key: "type", label: "Type" }, ...BASE_COLS]
     : BASE_COLS
@@ -457,7 +485,7 @@ function CyclingTable({ rows, showType, onEdit, onLock, onDelete }) {
 
                   {/* Entry Date */}
                   <td className="px-4 py-3 text-right whitespace-nowrap">
-                    {row.locked ? (
+                    {row.locked || readOnly ? (
                       <span className="text-gray-300">{row.entry_date}</span>
                     ) : (
                       <input
@@ -471,7 +499,7 @@ function CyclingTable({ rows, showType, onEdit, onLock, onDelete }) {
 
                   {/* Units */}
                   <td className="px-4 py-3 text-right">
-                    {row.locked ? (
+                    {row.locked || readOnly ? (
                       <span className="text-gray-300">{row.units}</span>
                     ) : (
                       <input
@@ -501,8 +529,8 @@ function CyclingTable({ rows, showType, onEdit, onLock, onDelete }) {
 
                   {/* Locked */}
                   <td className="px-4 py-3 text-center">
-                    {row.locked ? (
-                      <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-emerald-400 mx-auto">
+                    {row.locked || readOnly ? (
+                      <svg viewBox="0 0 24 24" fill="currentColor" className={`w-4 h-4 mx-auto ${row.locked ? "text-emerald-400" : "text-gray-600"}`}>
                         <path fillRule="evenodd" d="M12 1.5a5.25 5.25 0 00-5.25 5.25v3a3 3 0 00-3 3v6.75a3 3 0 003 3h10.5a3 3 0 003-3v-6.75a3 3 0 00-3-3v-3A5.25 5.25 0 0012 1.5zm3.75 8.25v-3a3.75 3.75 0 10-7.5 0v3h7.5z" clipRule="evenodd" />
                       </svg>
                     ) : (
@@ -520,15 +548,17 @@ function CyclingTable({ rows, showType, onEdit, onLock, onDelete }) {
 
                   {/* Actions */}
                   <td className="px-4 py-3 text-center">
-                    <button
-                      onClick={() => onDelete(row.id)}
-                      title="Delete"
-                      className="text-gray-600 hover:text-rose-400 transition"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="w-4 h-4">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                      </svg>
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => onDelete(row.id)}
+                        title="Delete"
+                        className="text-gray-600 hover:text-rose-400 transition"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" className="w-4 h-4">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                        </svg>
+                      </button>
+                    )}
                   </td>
                 </tr>
               )
@@ -573,6 +603,141 @@ function CyclingTable({ rows, showType, onEdit, onLock, onDelete }) {
   )
 }
 
+// ── Monthly breakdown ─────────────────────────────────────────────────────────
+
+function MonthlyBreakdown({ title, rows, fxRate }) {
+  const byMonth = {}
+  for (const row of rows) {
+    const month = row.expiry?.slice(0, 7)
+    if (!month) continue
+    if (!byMonth[month]) byMonth[month] = []
+    byMonth[month].push(row)
+  }
+
+  // Always show current month + next 2, regardless of data
+  const months = []
+  const cursor = new Date()
+  for (let i = 0; i < 3; i++) {
+    const y = cursor.getFullYear()
+    const m = String(cursor.getMonth() + 1).padStart(2, '0')
+    months.push(`${y}-${m}`)
+    cursor.setMonth(cursor.getMonth() + 1)
+  }
+
+  const totals = { earnings: 0, cashAside: 0, stockAside: 0 }
+
+  const monthData = months.map((month) => {
+    const mrs = byMonth[month] || []
+    const earnings   = mrs.reduce((s, r) => s + computeRow(r).earnings, 0)
+    const cashAside  = mrs.filter(r => r.type === "Cash Secured Put").reduce((s, r) => s + computeRow(r).cash_aside, 0)
+    const stockAside = mrs.filter(r => r.type === "Covered Call").reduce((s, r) => s + computeRow(r).cash_aside, 0)
+    totals.earnings   += earnings
+    totals.cashAside  += cashAside
+    totals.stockAside += stockAside
+    return { month, earnings, cashAside, stockAside }
+  })
+
+  const thCls = "px-4 py-2.5 text-right text-[11px] font-medium text-gray-500 uppercase tracking-wider"
+
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">{title}</h3>
+      <div className="overflow-x-auto rounded-xl border border-white/8">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-white/8 bg-white/[0.02]">
+              <th className="px-4 py-2.5 text-left text-[11px] font-medium text-gray-500 uppercase tracking-wider">Month</th>
+              <th className={thCls}>Earnings (USD)</th>
+              <th className={thCls}>Earnings (SGD)</th>
+              <th className={thCls}>Cash Aside</th>
+              <th className={thCls}>Stock Aside</th>
+            </tr>
+          </thead>
+          <tbody>
+            {monthData.map(({ month, earnings, cashAside, stockAside }) => (
+              <tr key={month} className="border-b border-white/5 hover:bg-white/[0.02] transition">
+                <td className="px-4 py-2.5 text-gray-300 font-medium">{formatMonth(month)}</td>
+                <td className="px-4 py-2.5 text-right text-emerald-400">${fmt(earnings, 0)}</td>
+                <td className="px-4 py-2.5 text-right text-emerald-300">
+                  {fxRate ? `S$${fmt(earnings * fxRate, 0)}` : "—"}
+                </td>
+                <td className="px-4 py-2.5 text-right text-violet-400">${fmt(cashAside, 0)}</td>
+                <td className="px-4 py-2.5 text-right text-sky-400">${fmt(stockAside, 0)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-white/10 bg-white/[0.03] font-semibold">
+              <td className="px-4 py-2.5 text-white text-sm">Total</td>
+              <td className="px-4 py-2.5 text-right text-emerald-400">${fmt(totals.earnings, 0)}</td>
+              <td className="px-4 py-2.5 text-right text-emerald-300">
+                {fxRate ? `S$${fmt(totals.earnings * fxRate, 0)}` : "—"}
+              </td>
+              <td className="px-4 py-2.5 text-right text-violet-400">${fmt(totals.cashAside, 0)}</td>
+              <td className="px-4 py-2.5 text-right text-sky-400">${fmt(totals.stockAside, 0)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ── Uncovered calls table ─────────────────────────────────────────────────────
+
+function UncoveredCallsTable({ rows, loading, onPlanCover }) {
+  const thCls = "px-4 py-3 text-[11px] font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
+  return (
+    <div className="mt-8">
+      <h2 className="text-sm font-semibold text-gray-300 mb-3">Uncovered Positions</h2>
+      <div className="overflow-x-auto rounded-2xl border border-white/8">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-white/8 bg-white/[0.02]">
+              <th className={`${thCls} text-left`}>Ticker</th>
+              <th className={`${thCls} text-right`}>Long Calls</th>
+              <th className={`${thCls} text-right`}>Long Stock</th>
+              <th className={`${thCls} text-right`}>Total Long</th>
+              <th className={`${thCls} text-right`}>Calls Sold</th>
+              <th className={`${thCls} text-right`}>Net Uncovered</th>
+              <th className={`${thCls} text-right`}>Value Uncovered</th>
+              <th className="w-10" />
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-600 text-sm">Loading…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-600 text-sm">No uncovered positions found</td></tr>
+            ) : rows.map(r => (
+              <tr key={r.ticker} className="border-b border-white/5 hover:bg-white/[0.02] transition">
+                <td className="px-4 py-3 font-medium text-white">{r.ticker}</td>
+                <td className="px-4 py-3 text-right text-gray-300">{r.longCalls}</td>
+                <td className="px-4 py-3 text-right text-gray-300">{r.longStock}</td>
+                <td className="px-4 py-3 text-right text-gray-300">{r.longCalls + r.longStock}</td>
+                <td className="px-4 py-3 text-right text-rose-400">{r.sold}</td>
+                <td className="px-4 py-3 text-right font-semibold text-emerald-400">{r.net}</td>
+                <td className="px-4 py-3 text-right text-gray-300">${fmt(r.valueUncovered, 0)}</td>
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => onPlanCover(r.ticker)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition shadow-lg shadow-indigo-500/20 whitespace-nowrap"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    Sell Cover
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 const TABS = ["Consolidated View", "Covered Calls", "Cash Secured Puts"]
@@ -584,16 +749,86 @@ export default function OptionsCyclingPage() {
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
   const [lockModal, setLockModal] = useState(null)  // row being locked
+  const [usdSgdRate, setUsdSgdRate] = useState(null)
+  const [uncoveredCalls, setUncoveredCalls] = useState([])
+  const [loadingUncovered, setLoadingUncovered] = useState(false)
+  const [planCoverTicker, setPlanCoverTicker] = useState("")
+
+  const loadUncoveredCalls = async (currentCcRows) => {
+    setLoadingUncovered(true)
+    try {
+      const data = await apiFetch("/api/portfolio")
+      const positions = data.positions || []
+
+      const longByTicker = {}
+      for (const p of positions) {
+        if (p.l_s !== "Long") continue
+        const ticker = positionTicker(p)
+        if (!ticker) continue
+        if (!longByTicker[ticker]) longByTicker[ticker] = { calls: 0, stock: 0, callValue: 0, stockValue: 0 }
+        if (p.asset_type === "Stock Option" && p.call_put === "Call") {
+          const qty = Math.abs(p.quantity || 0)
+          longByTicker[ticker].calls += qty
+          longByTicker[ticker].callValue += qty * (p.strike || 0) * 100
+        } else if (p.asset_type !== "Stock Option") {
+          const qty = Math.abs(p.quantity || 0)
+          const contracts = Math.floor(qty / 100)
+          longByTicker[ticker].stock += contracts
+          longByTicker[ticker].stockValue += qty * (p.current_price || 0)
+        }
+      }
+
+      const shortByTicker = {}
+      // From CC rows (manually added / imported)
+      for (const row of currentCcRows) {
+        shortByTicker[row.ticker] = true
+      }
+      // Also from portfolio directly — catches short calls with any expiry, not just <2mo
+      for (const p of positions) {
+        if (p.asset_type === "Stock Option" && p.call_put === "Call" && p.l_s === "Short") {
+          const ticker = positionTicker(p)
+          if (ticker) shortByTicker[ticker] = true
+        }
+      }
+
+      const candidates = []
+      for (const [ticker, { calls, stock, callValue, stockValue }] of Object.entries(longByTicker)) {
+        if (calls + stock === 0) continue
+        // If any sold call exists on this ticker (any expiry), exclude it entirely
+        if (shortByTicker[ticker]) continue
+        candidates.push({ ticker, longCalls: calls, longStock: stock, sold: 0, net: calls + stock, valueUncovered: callValue + stockValue })
+      }
+
+      const result = candidates
+        .filter(c => {
+          const rep = positions.find(p => positionTicker(p) === c.ticker)
+          return rep?.has_options === true
+        })
+        .sort((a, b) => b.net - a.net)
+
+      setUncoveredCalls(result)
+    } catch (e) {
+      console.error("loadUncoveredCalls:", e)
+    } finally {
+      setLoadingUncovered(false)
+    }
+  }
 
   // Load on mount
   useEffect(() => {
     apiFetch("/api/cycling")
       .then((data) => {
-        setCspRows(data.cash_secured_puts || [])
-        setCcRows(data.covered_calls || [])
+        const csp = data.cash_secured_puts || []
+        const cc = data.covered_calls || []
+        setCspRows(csp)
+        setCcRows(cc)
+        loadUncoveredCalls(cc)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
+    apiFetch("/api/fx/usdsgd")
+      .then((data) => { if (data.rate) setUsdSgdRate(data.rate) })
+      .catch(() => {})
   }, [])
 
   const saveAll = async (newCsp, newCc) => {
@@ -673,6 +908,7 @@ export default function OptionsCyclingPage() {
     setCcRows(updated)
     setAdding(false)
     saveAll(cspRows, updated)
+    loadUncoveredCalls(updated)
   }
 
   const handleCcEdit = (id, field, value) => {
@@ -685,6 +921,7 @@ export default function OptionsCyclingPage() {
     const updated = ccRows.filter((r) => r.id !== id)
     setCcRows(updated)
     saveAll(cspRows, updated)
+    loadUncoveredCalls(updated)
   }
 
   const handleCcLock = (row) => setLockModal({ ...row, _list: "cc" })
@@ -821,8 +1058,9 @@ export default function OptionsCyclingPage() {
           {isCcTab && adding && (
             <AddForm
               optionType="call"
-              onAdd={handleCcAdd}
-              onCancel={() => setAdding(false)}
+              initialTicker={planCoverTicker}
+              onAdd={(row) => { setPlanCoverTicker(""); handleCcAdd(row) }}
+              onCancel={() => { setPlanCoverTicker(""); setAdding(false) }}
             />
           )}
           {isCspTab && adding && (
@@ -835,22 +1073,44 @@ export default function OptionsCyclingPage() {
 
           {/* Table */}
           {activeTab === 0 && (
-            <CyclingTable
-              rows={consolidated}
-              showType
-              onEdit={() => {}}
-              onLock={() => {}}
-              onDelete={() => {}}
-            />
+            <>
+              <div className="mb-6 grid grid-cols-2 gap-6">
+                <MonthlyBreakdown
+                  title="Confirmed Earnings"
+                  rows={consolidated.filter(r => r.locked)}
+                  fxRate={usdSgdRate}
+                />
+                <MonthlyBreakdown
+                  title="Planned Earnings"
+                  rows={consolidated}
+                  fxRate={usdSgdRate}
+                />
+              </div>
+              <CyclingTable
+                rows={consolidated}
+                showType
+                readOnly
+                onEdit={() => {}}
+                onLock={() => {}}
+                onDelete={() => {}}
+              />
+            </>
           )}
           {activeTab === 1 && (
-            <CyclingTable
-              rows={ccRows}
-              showType={false}
-              onEdit={handleCcEdit}
-              onLock={handleCcLock}
-              onDelete={handleCcDelete}
-            />
+            <>
+              <CyclingTable
+                rows={ccRows}
+                showType={false}
+                onEdit={handleCcEdit}
+                onLock={handleCcLock}
+                onDelete={handleCcDelete}
+              />
+              <UncoveredCallsTable
+                rows={uncoveredCalls}
+                loading={loadingUncovered}
+                onPlanCover={(ticker) => { setPlanCoverTicker(ticker); setAdding(true) }}
+              />
+            </>
           )}
           {activeTab === 2 && (
             <CyclingTable

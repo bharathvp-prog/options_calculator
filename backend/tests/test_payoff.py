@@ -444,3 +444,46 @@ class TestPayoffTableEdgeCases:
             OptionLeg(option_type="call", side="sell", strike=400.0),
         ]
         assert compute_pnl_at(legs, 100.0, 500.0) == approx(-500.0)
+
+    def test_empty_legs_uses_default_price_range(self):
+        """compute_payoff_table with no legs falls back to the default (0, 200) range without error."""
+        result = compute_payoff_table([], 0.0)
+        prices = list(result["payoff_at"].keys())
+        assert len(prices) > 0
+        assert min(prices) == approx(0.0)
+        assert max(prices) == approx(200.0)
+        # No intrinsic on any leg → P&L is 0 everywhere
+        assert result["max_profit"] == approx(0.0)
+        assert result["max_loss"]   == approx(0.0)
+        assert result["breakevens"] == []
+        assert result["max_roi"] is None  # basis = 0, so ROI is undefined
+
+
+# ── Mixed per-leg qty ────────────────────────────────────────────────────────
+#
+# Verify that each leg's qty multiplier applies independently, not uniformly.
+
+class TestMixedQtyLegs:
+    def test_different_qty_per_leg(self):
+        """3× buy call(200), 1× sell call(300) — each qty applies to its own intrinsic."""
+        # At $350:
+        #   3× buy call(200): 3 × max(350-200, 0) × 100 = $45,000
+        #   1× sell call(300): -1 × max(350-300, 0) × 100 = -$5,000
+        #   P&L = 45,000 - 5,000 - 2,000 (net_cost) = $38,000
+        legs = [
+            OptionLeg(option_type="call", side="buy",  strike=200.0, qty=3),
+            OptionLeg(option_type="call", side="sell", strike=300.0, qty=1),
+        ]
+        assert compute_pnl_at(legs, 350.0, 2000.0) == approx(38000.0)
+
+    def test_mixed_qty_put_side(self):
+        """1× buy put(150), 2× sell put(100) — net short put position at lower strikes."""
+        # At $80:
+        #   1× buy put(150): max(150-80, 0) × 100 = $7,000
+        #   2× sell put(100): -2 × max(100-80, 0) × 100 = -$4,000
+        #   P&L = 7,000 - 4,000 - 500 (net_cost) = $2,500
+        legs = [
+            OptionLeg(option_type="put", side="buy",  strike=150.0, qty=1),
+            OptionLeg(option_type="put", side="sell", strike=100.0, qty=2),
+        ]
+        assert compute_pnl_at(legs, 80.0, 500.0) == approx(2500.0)

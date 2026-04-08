@@ -12,11 +12,13 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.portfolio import parse_saxo_xlsx, symbol_to_yf_ticker, get_price_history
+from services.portfolio import parse_saxo_xlsx, symbol_to_yf_ticker, get_price_history, _col_letter_to_index, _safe_float
 
 FIXTURE = Path(__file__).parent / "fixtures" / "Positions_02-Apr-2026_19_24_48.xlsx"
 
@@ -69,6 +71,14 @@ class TestSymbolToYfTicker:
     def test_none_symbol_returns_none(self):
         """None symbol returns None."""
         assert symbol_to_yf_ticker(None, "Stock") is None
+
+    def test_stock_no_exchange_suffix(self):
+        """Stock symbol with no colon (no exchange suffix) returns the base symbol as-is."""
+        assert symbol_to_yf_ticker("COIN", "Stock") == "COIN"
+
+    def test_stock_hk_no_leading_zero(self):
+        """HK stock with no leading zeros is padded to 4 digits with .HK suffix."""
+        assert symbol_to_yf_ticker("1299:xhkg", "Stock") == "1299.HK"
 
 
 class TestParseSaxoXlsx:
@@ -222,6 +232,73 @@ class TestGetPriceHistory:
         assert dates == []
         assert prices == {}
 
+class TestColLetterToIndex:
+    def test_a_is_zero(self):
+        """Column 'A' maps to index 0."""
+        assert _col_letter_to_index("A") == 0
+
+    def test_b_is_one(self):
+        """Column 'B' maps to index 1."""
+        assert _col_letter_to_index("B") == 1
+
+    def test_z_is_25(self):
+        """Column 'Z' maps to index 25."""
+        assert _col_letter_to_index("Z") == 25
+
+    def test_aa_is_26(self):
+        """Column 'AA' maps to index 26 (first double-letter column)."""
+        assert _col_letter_to_index("AA") == 26
+
+    def test_ab_is_27(self):
+        """Column 'AB' maps to index 27."""
+        assert _col_letter_to_index("AB") == 27
+
+    def test_az_is_51(self):
+        """Column 'AZ' maps to index 51."""
+        assert _col_letter_to_index("AZ") == 51
+
+    def test_ba_is_52(self):
+        """Column 'BA' maps to index 52."""
+        assert _col_letter_to_index("BA") == 52
+
+    def test_lowercase_input_handled(self):
+        """Lowercase letters produce the same result as uppercase."""
+        assert _col_letter_to_index("a") == 0
+        assert _col_letter_to_index("z") == 25
+        assert _col_letter_to_index("aa") == 26
+
+
+class TestSafeFloat:
+    def test_none_returns_none(self):
+        """None input returns None."""
+        assert _safe_float(None) is None
+
+    def test_empty_string_returns_none(self):
+        """Empty string returns None."""
+        assert _safe_float("") is None
+
+    def test_valid_float_string(self):
+        """A valid float string is parsed correctly."""
+        assert _safe_float("3.14") == pytest.approx(3.14)
+
+    def test_integer_string(self):
+        """An integer string is returned as a float."""
+        assert _safe_float("42") == pytest.approx(42.0)
+
+    def test_negative_value(self):
+        """Negative numeric strings are parsed correctly."""
+        assert _safe_float("-15.5") == pytest.approx(-15.5)
+
+    def test_non_numeric_string_returns_none(self):
+        """A non-numeric string returns None without raising."""
+        assert _safe_float("abc") is None
+
+    def test_actual_float_passthrough(self):
+        """An already-float value passes through unchanged."""
+        assert _safe_float(3.14) == pytest.approx(3.14)
+
+
+class TestGetPriceHistory:
     def test_duplicate_tickers_deduplicated(self):
         """Duplicate tickers are deduplicated; yf.download called with single string."""
         idx = pd.to_datetime(["2026-04-01", "2026-04-02"])

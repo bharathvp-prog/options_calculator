@@ -1,8 +1,10 @@
 import os
+import time
 import firebase_admin
 from firebase_admin import credentials, auth as firebase_auth, firestore
-from fastapi import FastAPI, HTTPException, Header, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Header, Query, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import yfinance as yf
@@ -12,9 +14,15 @@ from services.tickers import load_tickers, search_tickers
 from services.strategy import identify_strategy
 from services.payoff import OptionLeg, compute_payoff_table
 from services.portfolio import parse_saxo_xlsx, symbol_to_yf_ticker, get_price_history
+from services.historical import parse_historical_xlsx
 from services.validation import spread_validity_error
 
 load_dotenv()
+
+from logging_config import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # Initialize Firebase Admin SDK
 _firebase_cert = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "firebase_config.json")
@@ -22,10 +30,11 @@ if os.path.exists(_firebase_cert):
     cred = credentials.Certificate(_firebase_cert)
     firebase_admin.initialize_app(cred)
 else:
-    print(
-        f"WARNING: Firebase service account not found at '{_firebase_cert}'. "
-        "Auth will be disabled — all requests will be accepted. "
-        "Set FIREBASE_SERVICE_ACCOUNT_PATH or place firebase_config.json in backend/."
+    logger.warning(
+        "Firebase service account not found at '%s'. "
+        "Auth is disabled — all requests will be accepted. "
+        "Set FIREBASE_SERVICE_ACCOUNT_PATH or place firebase_config.json in backend/.",
+        _firebase_cert,
     )
 
 app = FastAPI(title="Options Calculator API")
@@ -45,6 +54,21 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.info("%s %s → %d (%.1fms)", request.method, request.url.path, response.status_code, elapsed_ms)
+    return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
 def verify_token(authorization: str = Header(default=None)) -> dict:
     if not firebase_admin._apps:
         # Firebase not configured — dev mode, skip auth
@@ -54,7 +78,8 @@ def verify_token(authorization: str = Header(default=None)) -> dict:
     token = authorization.removeprefix("Bearer ").strip()
     try:
         return firebase_auth.verify_id_token(token)
-    except Exception:
+    except Exception as e:
+        logger.warning("Token verification failed: %s", e)
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
@@ -146,7 +171,7 @@ def strategy_identify(payload: StrategyRequest):
         else:
             result["current_price"] = None
     except Exception as e:
-        print(f"Could not fetch current price for {result.get('ticker')}: {e}")
+        logger.warning("Could not fetch current price for %s: %s", result.get("ticker"), e)
         result["current_price"] = None
 
     return result
@@ -229,7 +254,7 @@ def strategy_compare(payload: StrategyCompareRequest, authorization: str = Heade
                     "impliedVolatility": safe_val(best_row.get("impliedVolatility"), 0.0, float),
                 }
             except Exception as e:
-                print(f"Error fetching leg for {payload.ticker} {expiry}: {e}")
+                logger.error("Error fetching leg for %s %s", payload.ticker, expiry, exc_info=True)
                 cheapest = None
 
             if cheapest is None:
@@ -314,7 +339,21 @@ def get_expiries(ticker: str = Query(..., description="Stock ticker symbol")):
     try:
         clean_ticker = ticker.upper().split(":")[0].strip()
         expiries = get_expiry_dates(clean_ticker)
-        return {"ticker": clean_ticker, "expiries": expiries}
+
+        current_price = None
+        try:
+            t_obj = yf.Ticker(clean_ticker)
+            cp = getattr(t_obj.fast_info, "last_price", None)
+            if cp is None or str(cp).lower() == "nan":
+                df_hist = t_obj.history(period="1d")
+                if not df_hist.empty:
+                    cp = float(df_hist["Close"].iloc[-1])
+            if cp is not None:
+                current_price = float(cp)
+        except Exception:
+            pass
+
+        return {"ticker": clean_ticker, "expiries": expiries, "current_price": current_price}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -322,8 +361,6 @@ def get_expiries(ticker: str = Query(..., description="Stock ticker symbol")):
 @app.post("/api/search")
 def search_cheapest(payload: SearchRequest, authorization: str = Header(default=None)):
     verify_token(authorization)
-
-    import traceback
 
     # Fetch all matching DataFrames per leg
     leg_dfs = []
@@ -337,9 +374,8 @@ def search_cheapest(payload: SearchRequest, authorization: str = Header(default=
                 strike_max=leg.strike_max,
                 option_type=leg.option_type,
             )
-        except Exception as e:
-            print(f"Error fetching leg {i} ({leg.ticker}): {e}")
-            traceback.print_exc()
+        except Exception:
+            logger.error("Error fetching leg %d (%s)", i, leg.ticker, exc_info=True)
             df = None
         leg_dfs.append(df)
 
@@ -386,9 +422,8 @@ def search_cheapest(payload: SearchRequest, authorization: str = Header(default=
             if df is not None and not df.empty:
                 filtered = df[df["expiration"] == forced_expiry] if forced_expiry else df
                 cheapest = find_cheapest(filtered, sort_by=payload.sort_by)
-        except Exception as e:
-            print(f"Error finding cheapest for leg {i} ({leg.ticker}): {e}")
-            traceback.print_exc()
+        except Exception:
+            logger.error("Error finding cheapest for leg %d (%s)", i, leg.ticker, exc_info=True)
 
         result = {"leg_index": i, "ticker": leg.ticker.upper(), "side": leg.side}
         if cheapest:
@@ -437,12 +472,34 @@ async def portfolio_upload(
     for p in positions:
         p["yf_ticker"] = symbol_to_yf_ticker(p.get("symbol", ""), p.get("asset_type", ""))
 
+    stock_tickers = list(dict.fromkeys(
+        p["yf_ticker"] for p in positions
+        if p.get("asset_type") != "Stock Option" and p.get("yf_ticker")
+    ))
+    has_options_cache: dict[str, bool] = {}
+    for t in stock_tickers:
+        try:
+            has_options_cache[t] = bool(yf.Ticker(t).options)
+        except Exception:
+            logger.warning("Failed to check options for %s", t, exc_info=True)
+            has_options_cache[t] = False
+
+    for p in positions:
+        if p.get("asset_type") == "Stock Option":
+            p["has_options"] = True
+        else:
+            p["has_options"] = has_options_cache.get(p.get("yf_ticker"), False)
+
+    all_tickers = list(dict.fromkeys(p["yf_ticker"] for p in positions if p.get("yf_ticker")))
+    price_dates, price_data = get_price_history(all_tickers, days=14) if all_tickers else ([], {})
+
     uploaded_at = datetime.now(timezone.utc).isoformat()
-    doc = {"uploaded_at": uploaded_at, "positions": positions}
+    doc = {"uploaded_at": uploaded_at, "positions": positions,
+           "price_dates": price_dates, "price_data": price_data}
 
     db = get_firestore()
     if db is not None:
-        db.collection("portfolios").document(uid).set(doc)
+        db.collection("portfolios").document(uid).set(doc, merge=True)
 
     return {"uploaded_at": uploaded_at, "count": len(positions)}
 
@@ -462,7 +519,12 @@ def portfolio_get(authorization: str = Header(default=None)):
         return {"positions": [], "uploaded_at": None}
 
     data = doc.to_dict()
-    return {"positions": data.get("positions", []), "uploaded_at": data.get("uploaded_at")}
+    return {
+        "positions": data.get("positions", []),
+        "uploaded_at": data.get("uploaded_at"),
+        "price_dates": data.get("price_dates", []),
+        "price_data": data.get("price_data", {}),
+    }
 
 
 @app.get("/api/portfolio/prices")
@@ -535,9 +597,81 @@ def portfolio_refresh(authorization: str = Header(default=None)):
             else:
                 pos["pnl_sgd"] = round((new_price - open_price) * qty_fx, 2)
 
+    stock_tickers_r = list(dict.fromkeys(
+        p["yf_ticker"] for p in positions
+        if p.get("asset_type") != "Stock Option" and p.get("yf_ticker")
+    ))
+    has_options_r: dict[str, bool] = {}
+    for t in stock_tickers_r:
+        try:
+            has_options_r[t] = bool(yf.Ticker(t).options)
+        except Exception:
+            logger.warning("Failed to check options for %s", t, exc_info=True)
+            has_options_r[t] = False
+
+    for pos in positions:
+        if pos.get("asset_type") == "Stock Option":
+            pos["has_options"] = True
+        else:
+            pos["has_options"] = has_options_r.get(pos.get("yf_ticker"), False)
+
+    price_dates, price_data = get_price_history(tickers, days=14) if tickers else ([], {})
+
     refreshed_at = datetime.now(timezone.utc).isoformat()
-    doc_ref.set({"uploaded_at": refreshed_at, "positions": positions})
-    return {"uploaded_at": refreshed_at, "positions": positions}
+    doc_ref.set({"uploaded_at": refreshed_at, "positions": positions,
+                 "price_dates": price_dates, "price_data": price_data}, merge=True)
+    return {"uploaded_at": refreshed_at, "positions": positions,
+            "price_dates": price_dates, "price_data": price_data}
+
+
+class CashPayload(BaseModel):
+    amount: float
+    date: str  # ISO date string e.g. "2026-04-01"
+
+
+@app.get("/api/portfolio/cash")
+def portfolio_cash_get(authorization: str = Header(default=None)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        return {"cash_history": []}
+
+    doc = db.collection("portfolios").document(uid).get()
+    if not doc.exists:
+        return {"cash_history": []}
+
+    data = doc.to_dict()
+    history = data.get("cash_history", [])
+    # Migrate legacy cash_sgd field (single value, no date)
+    if not history and "cash_sgd" in data and data["cash_sgd"]:
+        history = [{"date": "2000-01-01", "amount": data["cash_sgd"]}]
+    # Seed default starting balance if no history recorded yet
+    if not history:
+        history = [{"date": "2026-03-01", "amount": 81000.0}]
+        db.collection("portfolios").document(uid).set({"cash_history": history}, merge=True)
+    return {"cash_history": sorted(history, key=lambda e: e["date"])}
+
+
+@app.patch("/api/portfolio/cash")
+def portfolio_cash_update(payload: CashPayload, authorization: str = Header(default=None)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+
+    doc = db.collection("portfolios").document(uid).get()
+    data = doc.to_dict() if doc.exists else {}
+    history = data.get("cash_history", [])
+    # Remove any existing entry for the same date, then append
+    history = [e for e in history if e["date"] != payload.date]
+    history.append({"date": payload.date, "amount": payload.amount})
+    history.sort(key=lambda e: e["date"])
+    db.collection("portfolios").document(uid).set({"cash_history": history}, merge=True)
+    return {"cash_history": history}
 
 
 # ── Options chain helpers ────────────────────────────────────────────────────
@@ -647,3 +781,142 @@ def cycling_save(payload: CyclingDoc, authorization: str = Header(default=None))
         "covered_calls": [p.dict() for p in payload.covered_calls],
     })
     return {"ok": True}
+
+
+@app.get("/api/fx/usdsgd")
+def get_usdsgd_rate():
+    db = get_firestore()
+    cache_doc = None
+
+    # Check Firestore cache
+    if db is not None:
+        try:
+            cache_doc = db.collection("fx_cache").document("USDSGD").get()
+            if cache_doc.exists:
+                cached = cache_doc.to_dict()
+                updated_at = cached.get("updated_at")
+                rate = cached.get("rate")
+                if updated_at and rate:
+                    age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)).days
+                    if age_days < 7:
+                        return {"rate": rate}
+        except Exception:
+            logger.warning("Failed to read FX cache from Firestore", exc_info=True)
+
+    # Fetch fresh rate
+    rate = None
+    try:
+        rate = float(yf.Ticker("USDSGD=X").fast_info["last_price"])
+    except Exception:
+        logger.warning("Failed to fetch USDSGD rate from yfinance", exc_info=True)
+
+    # Persist to Firestore if we got a rate
+    if rate is not None and db is not None:
+        try:
+            db.collection("fx_cache").document("USDSGD").set({
+                "rate": rate,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            logger.warning("Failed to write FX cache to Firestore", exc_info=True)
+
+    return {"rate": rate}
+
+
+# ── Historical Performance endpoints ─────────────────────────────────────────
+
+class LockPayload(BaseModel):
+    month: str   # "YYYY-MM"
+    locked: bool
+
+
+@app.post("/api/historical/upload")
+async def historical_upload(
+    file: UploadFile = File(...),
+    authorization: str = Header(default=None),
+):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    if not file.filename.endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Only .xlsx files are accepted")
+
+    content = await file.read()
+    try:
+        parsed = parse_historical_xlsx(content)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to parse file: {e}")
+
+    db = get_firestore()
+    existing: dict = {}
+    if db is not None:
+        doc = db.collection("portfolios").document(uid).get()
+        if doc.exists:
+            existing = doc.to_dict().get("historical_performance", {})
+
+    skipped_months: list[str] = []
+    merged = dict(existing)
+    for month, data in parsed.items():
+        stored = existing.get(month, {})
+        if stored.get("locked"):
+            skipped_months.append(month)
+            continue
+        data["locked"] = stored.get("locked", False)
+        merged[month] = data
+
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+    if db is not None:
+        db.collection("portfolios").document(uid).set(
+            {"historical_performance": merged, "historical_uploaded_at": uploaded_at},
+            merge=True,
+        )
+
+    return {
+        "uploaded_at": uploaded_at,
+        "months_updated": len(parsed) - len(skipped_months),
+        "skipped_months": sorted(skipped_months),
+    }
+
+
+@app.get("/api/historical")
+def historical_get(authorization: str = Header(default=None)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        return {"historical_performance": {}, "uploaded_at": None}
+
+    doc = db.collection("portfolios").document(uid).get()
+    if not doc.exists:
+        return {"historical_performance": {}, "uploaded_at": None}
+
+    data = doc.to_dict()
+    return {
+        "historical_performance": data.get("historical_performance", {}),
+        "uploaded_at": data.get("historical_uploaded_at"),
+    }
+
+
+@app.post("/api/historical/lock")
+def historical_lock(payload: LockPayload, authorization: str = Header(default=None)):
+    user = verify_token(authorization)
+    uid = user["uid"]
+
+    db = get_firestore()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Storage unavailable")
+
+    doc = db.collection("portfolios").document(uid).get()
+    perf: dict = doc.to_dict().get("historical_performance", {}) if doc.exists else {}
+
+    if payload.month not in perf:
+        raise HTTPException(status_code=404, detail=f"Month {payload.month} not found")
+
+    perf[payload.month]["locked"] = payload.locked
+    db.collection("portfolios").document(uid).set(
+        {"historical_performance": perf}, merge=True
+    )
+    return {"month": payload.month, "locked": payload.locked}
