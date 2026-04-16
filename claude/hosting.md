@@ -22,7 +22,7 @@
 
 | Service | URL |
 |---|---|
-| Frontend (Vercel) | *(fill in after deploy)* |
+| Frontend (Vercel) | https://arkenvault.vercel.app |
 | Backend (Render) | https://arkenvault-api.onrender.com |
 
 ---
@@ -50,7 +50,7 @@ User → https://arkenvault.vercel.app
 | `SUPABASE_URL` | `https://nqoqgywksxudchcomakz.supabase.co` | From `backend/.env` |
 | `SUPABASE_ANON_KEY` | (from `backend/.env`) | Public read key |
 | `SUPABASE_SERVICE_KEY` | (from `backend/.env`) | Backend write key — keep secret |
-| `ALLOWED_ORIGINS` | `https://arkenvault.vercel.app` | Set after Vercel URL is known; comma-separate to add more |
+| `ALLOWED_ORIGINS` | `https://arkenvault.vercel.app` | Comma-separate to add more origins |
 
 ### Frontend (set in Vercel dashboard)
 
