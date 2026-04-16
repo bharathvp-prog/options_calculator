@@ -418,23 +418,8 @@ def _safe_float(v):
         return None
 
 
-# ── yfinance browser-spoofed session (Yahoo blocks cloud-hosting IPs on V7/V10 endpoints) ──
-import requests as _requests
-
-_YF_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-}
-
 def _yf_ticker(symbol: str) -> yf.Ticker:
-    session = _requests.Session()
-    session.headers.update(_YF_HEADERS)
-    return yf.Ticker(symbol, session=session)
+    return yf.Ticker(symbol)
 
 
 # ── Company description cache (60-day TTL — descriptions rarely change) ───────
