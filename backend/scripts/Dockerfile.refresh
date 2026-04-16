@@ -1,0 +1,18 @@
+# Oxas Screener Refresh — Cloud Run Job image
+# Build: docker build -f scripts/Dockerfile.refresh -t screener-refresh .
+# (Run from backend/ directory so COPY paths resolve correctly)
+
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY scripts/requirements-refresh.txt .
+RUN pip install --no-cache-dir -r requirements-refresh.txt
+
+# Copy the refresh script and ticker data it needs
+COPY scripts/refresh_screener.py .
+COPY data/ ./data/
+
+# Run the refresh script
+CMD ["python", "refresh_screener.py"]

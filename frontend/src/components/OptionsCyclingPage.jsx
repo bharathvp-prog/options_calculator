@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react"
+import { Link } from "react-router-dom"
 import { auth } from "../firebase"
 
 async function getToken() {
@@ -472,7 +473,9 @@ function CyclingTable({ rows, showType, onEdit, onLock, onDelete, readOnly = fal
                   )}
 
                   {/* Stock Name */}
-                  <td className="px-4 py-3 font-medium text-white">{row.ticker}</td>
+                  <td className="px-4 py-3 font-medium text-white">
+                    <Link to={`/app/stock/${row.ticker}`} className="hover:text-indigo-300 transition-colors">{row.ticker}</Link>
+                  </td>
 
                   {/* Strike */}
                   <td className="px-4 py-3 text-right text-gray-300">{fmt(row.strike, 2)}</td>
@@ -1004,7 +1007,7 @@ export default function OptionsCyclingPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold text-white">Options Cycling</h1>
+          <h1 className="text-xl font-semibold text-white">Options Wheeling</h1>
           <p className="text-sm text-gray-500 mt-1">Track your covered calls and cash-secured puts</p>
         </div>
         {(isCspTab || isCcTab) && !adding && (

@@ -28,7 +28,7 @@ export default function LoginPage() {
     setLoading(true)
     try {
       await signInWithPopup(auth, new GoogleAuthProvider())
-      navigate("/app")
+      navigate("/app/portfolio")
     } catch (e) {
       setError(e.message)
     } finally {
@@ -46,7 +46,7 @@ export default function LoginPage() {
       } else {
         await createUserWithEmailAndPassword(auth, email, password)
       }
-      navigate("/app")
+      navigate("/app/portfolio")
     } catch (e) {
       setError(e.message)
     } finally {
@@ -60,12 +60,20 @@ export default function LoginPage() {
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-indigo-600/15 rounded-full blur-[100px] pointer-events-none" />
 
       <Link to="/" className="relative z-10 flex items-center gap-2 mb-8">
-        <div className="w-7 h-7 rounded-lg bg-indigo-500 flex items-center justify-center">
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-white">
-            <path d="M2.25 2.25a.75.75 0 000 1.5h1.386c.17 0 .318.114.362.278l2.558 9.592a3.752 3.752 0 00-2.806 3.63c0 .414.336.75.75.75h15.75a.75.75 0 000-1.5H5.378A2.25 2.25 0 017.5 15h11.218a.75.75 0 00.674-.421 60.358 60.358 0 002.96-7.228.75.75 0 00-.525-.965A60.864 60.864 0 005.68 4.509l-.232-.867A1.875 1.875 0 003.636 2.25H2.25z" />
+        <div className="w-7 h-7 rounded-lg bg-indigo-500 flex items-center justify-center shrink-0">
+          <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none">
+            <rect x="3" y="8" width="3" height="8" rx="0.5" fill="white" />
+            <line x1="4.5" y1="5" x2="4.5" y2="8" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="4.5" y1="16" x2="4.5" y2="19" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            <rect x="10.5" y="5" width="3" height="10" rx="0.5" fill="white" />
+            <line x1="12" y1="3" x2="12" y2="5" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="12" y1="15" x2="12" y2="19" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            <rect x="18" y="7" width="3" height="7" rx="0.5" fill="white" />
+            <line x1="19.5" y1="4" x2="19.5" y2="7" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="19.5" y1="14" x2="19.5" y2="18" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </div>
-        <span className="text-base font-semibold tracking-tight text-white">Oxas</span>
+        <span className="text-base font-semibold tracking-tight text-white">ArkenVault</span>
       </Link>
 
       <div className="relative z-10 w-full max-w-md bg-white/[0.03] border border-white/10 rounded-2xl p-8 shadow-2xl shadow-black/50">
@@ -73,7 +81,7 @@ export default function LoginPage() {
           {mode === "signin" ? "Welcome back" : "Create your account"}
         </h1>
         <p className="text-sm text-gray-500 mb-7">
-          {mode === "signin" ? "Sign in to access Oxas" : "Get started for free — no credit card needed"}
+          {mode === "signin" ? "Sign in to access ArkenVault" : "Get started for free — no credit card needed"}
         </p>
 
         {/* Google */}

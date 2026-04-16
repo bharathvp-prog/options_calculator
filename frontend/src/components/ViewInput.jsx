@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import useSpeechRecognition from "../hooks/useSpeechRecognition"
 
 const EXAMPLES = [
@@ -8,8 +8,12 @@ const EXAMPLES = [
   "AAPL will stay flat around 220 through March 2026",
 ]
 
-export default function ViewInput({ onSubmit, loading }) {
-  const [view, setView] = useState("")
+export default function ViewInput({ onSubmit, loading, initialValue = "" }) {
+  const [view, setView] = useState(initialValue)
+
+  useEffect(() => {
+    if (initialValue) setView(initialValue)
+  }, [initialValue])
   const { supported, listening, start, stop, isProcessingAI, aiLoadingMessage } = useSpeechRecognition()
 
   const handleSubmit = (e) => {

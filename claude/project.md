@@ -1,7 +1,7 @@
-# Oxas — Project Guide for Claude
+# ArkenVault — Project Guide for Claude
 
 ## What this project is
-Oxas is an AI-assisted options strategy tool. Users describe a market view in plain English (e.g. "I'm confident AMD will grow to 250 but no more than 300 by June 2028"), the app identifies the right strategy, then scans live Yahoo Finance data to find the cheapest matching contracts. Results are compared across expiry horizons (1mo / 3mo / 6mo / 1yr / 2yr / latest) with cost-per-day and payoff analytics.
+ArkenVault is an AI-assisted options strategy tool. Users describe a market view in plain English (e.g. "I'm confident AMD will grow to 250 but no more than 300 by June 2028"), the app identifies the right strategy, then scans live Yahoo Finance data to find the cheapest matching contracts. Results are compared across expiry horizons (1mo / 3mo / 6mo / 1yr / 2yr / latest) with cost-per-day and payoff analytics.
 
 The app also includes a **Portfolio** feature: users upload a Saxo Bank `.xlsx` positions export, which is parsed and stored in Firestore. The portfolio page shows grouped positions (options/stocks), historical 14-day trend tables with day-over-day color coding, a 2W change summary column, and a 14-day inline SVG chart.
 
@@ -263,11 +263,12 @@ A git pre-commit hook enforces this: `.git/hooks/pre-commit` runs the full suite
 
 ## Design system
 - **Theme:** Dark by default — base background `#0a0a0f`, primary accent `indigo-600/500`
-- **Light theme:** toggled via `html.light` class on `<html>` element; CSS overrides in `index.css`; persisted to `localStorage` under key `oxas-theme`; applied immediately in `main.jsx` before React renders
+- **Light theme:** toggled via `html.light` class on `<html>` element; CSS overrides in `index.css`; persisted to `localStorage` under key `arkenvault-theme`; applied immediately in `main.jsx` before React renders
 - **Theme toggle:** sun/moon icon button in sidebar footer (AppShell); uses `lib/theme.js` helpers
 - **Logo:** always `fill="white"` on SVG inside indigo square — do NOT use `fill="currentColor"` (light theme CSS would override it)
 - **Cards/panels:** `bg-white/[0.02] border border-white/8 rounded-2xl`
 - **Inputs:** `bg-white/5 border border-white/10 rounded-xl text-white` with `focus:ring-indigo-500/50`
+- **Select dropdowns:** same class as inputs — `bg-white/5 border border-white/10 rounded-xl text-sm text-white px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 transition`. Do NOT add `[color-scheme:dark]` to individual selects — `color-scheme: dark` is set globally on `html` in `index.css` (overridden to `light` on `html.light`), so all native form controls render dark automatically site-wide.
 - **Primary button:** `bg-indigo-600 hover:bg-indigo-500 rounded-xl shadow-lg shadow-indigo-500/20`
 - **Call badge:** `bg-emerald-500/15 text-emerald-400 border-emerald-500/20`
 - **Put badge:** `bg-rose-500/15 text-rose-400 border-rose-500/20`
@@ -277,7 +278,16 @@ A git pre-commit hook enforces this: `.git/hooks/pre-commit` runs the full suite
 - **DTE colors:** green >90d · amber >30d · rose <30d
 - **Trend cell colors:** emerald = up vs prior day · rose = down · gray = first column or no data
 - **2W change column:** emerald if ≥0, rose if <0
-- **Brand name:** Oxas (always, everywhere)
+- **Brand name:** ArkenVault (always, everywhere)
+
+## Hosting
+See `claude/hosting.md` for the full hosting plan, env var reference, and deployment steps.
+
+**Stack:** Vercel (frontend static) + Render free tier (backend Docker)
+**URL pattern:** `https://arkenvault.vercel.app` → rewrites `/api/*` to Render backend
+**Key env vars:**
+- Backend: `FIREBASE_SERVICE_ACCOUNT_JSON`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `ALLOWED_ORIGINS`
+- Frontend (Vercel): all `VITE_FIREBASE_*` vars
 
 ## Dev commands
 ```bash

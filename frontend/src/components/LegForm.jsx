@@ -226,7 +226,7 @@ export default function LegForm({ onAdd }) {
               value={leg.expiry_from}
               onChange={(e) => set("expiry_from", e.target.value)}
               required
-              className={inputClass + " [color-scheme:dark]"}
+              className={inputClass + ""}
             >
               {expiries.map((d) => (
                 <option key={d} value={d}>{d}</option>
@@ -238,7 +238,7 @@ export default function LegForm({ onAdd }) {
               value={leg.expiry_from}
               onChange={(e) => set("expiry_from", e.target.value)}
               required
-              className={inputClass + " [color-scheme:dark]"}
+              className={inputClass + ""}
             />
           )}
         </div>
@@ -251,7 +251,7 @@ export default function LegForm({ onAdd }) {
               value={leg.expiry_to}
               onChange={(e) => set("expiry_to", e.target.value)}
               required
-              className={inputClass + " [color-scheme:dark]"}
+              className={inputClass + ""}
             >
               {expiries.map((d) => (
                 <option key={d} value={d}>{d}</option>
@@ -263,7 +263,7 @@ export default function LegForm({ onAdd }) {
               value={leg.expiry_to}
               onChange={(e) => set("expiry_to", e.target.value)}
               required
-              className={inputClass + " [color-scheme:dark]"}
+              className={inputClass + ""}
             />
           )}
         </div>

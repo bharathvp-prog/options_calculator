@@ -40,6 +40,7 @@ _HEADERS_WANTED = {
     "Amount Client Currency",
     "Unified Instrument Code (UIC)",
     "Instrument SubType",
+    "Instrument Symbol",
 }
 
 
@@ -212,6 +213,7 @@ def parse_historical_xlsx(file_bytes: bytes) -> dict[str, dict]:
             "amount": amount,
             "uic": _get(row, "Unified Instrument Code (UIC)"),
             "instrument_subtype": _get(row, "Instrument SubType"),
+            "instrument_symbol": _get(row, "Instrument Symbol"),
         })
 
     result: dict[str, dict] = {}
@@ -233,9 +235,9 @@ def parse_historical_xlsx(file_bytes: bytes) -> dict[str, dict]:
             if r["amount_type"] in _DIVIDEND_TYPES:
                 dividend_pnl += r["amount"]
 
-        # Deposits (Cash Amount where Instrument SubType == CASHDEPINSTF)
+        # Deposits (Cash Amount where Instrument Symbol == CASHDEPINSTF)
         for r in rows_m:
-            if r["amount_type"] == "Cash Amount" and r["instrument_subtype"] == "CASHDEPINSTF":
+            if r["amount_type"] == "Cash Amount" and r["instrument_symbol"] == "CASHDEPINSTF":
                 deposits += r["amount"]
 
         # Realized / Unrealized from Premium and Share Amount

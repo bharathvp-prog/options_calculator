@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { useLocation } from "react-router-dom"
 import { auth } from "../firebase"
 import LegForm from "./LegForm"
 import LegList from "./LegList"
@@ -9,6 +10,8 @@ import ComparisonView from "./ComparisonView"
 import PayoffCalculator from "./PayoffCalculator"
 
 export default function OptionsPage() {
+  const location = useLocation()
+  const prefillTicker = location.state?.prefillTicker
   const [mode, setMode] = useState("ai") // "ai" | "manual"
 
   // AI flow
@@ -162,7 +165,7 @@ export default function OptionsPage() {
       {mode === "ai" ? (
         <>
           {!aiProposal ? (
-            <ViewInput onSubmit={handleIdentifyStrategy} loading={aiIdentifying} />
+            <ViewInput onSubmit={handleIdentifyStrategy} loading={aiIdentifying} initialValue={prefillTicker ? `Analyse options for ${prefillTicker}` : ""} />
           ) : (
             <StrategyProposal
               proposal={aiProposal}
@@ -238,4 +241,3 @@ export default function OptionsPage() {
     </main>
   )
 }
-

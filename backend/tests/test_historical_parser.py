@@ -102,15 +102,17 @@ _HEADER = [
 _DATE_COL = 0
 _AMOUNT_TYPE_COL = 4
 _UIC_COL = 7
+_INSTR_SYMBOL_COL = 9
 _INSTR_SUBTYPE_COL = 11
 _AMOUNT_CLIENT_COL = 18
 
 
-def _row(date="2026-01-15", amount_type="", uic="", instrument_subtype="", amount=0.0) -> list:
+def _row(date="2026-01-15", amount_type="", uic="", instrument_symbol="", instrument_subtype="", amount=0.0) -> list:
     r = [""] * len(_HEADER)
     r[_DATE_COL] = date
     r[_AMOUNT_TYPE_COL] = amount_type
     r[_UIC_COL] = uic
+    r[_INSTR_SYMBOL_COL] = instrument_symbol
     r[_INSTR_SUBTYPE_COL] = instrument_subtype
     r[_AMOUNT_CLIENT_COL] = str(amount)
     return r
@@ -170,21 +172,21 @@ def test_dividends_summed():
 
 # ── deposit detection ─────────────────────────────────────────────────────────
 
-def test_deposit_detected_by_instrument_subtype():
-    """Cash Amount row with Instrument SubType CASHDEPINSTF → deposit."""
+def test_deposit_detected_by_instrument_symbol():
+    """Cash Amount row with Instrument Symbol CASHDEPINSTF → deposit."""
     rows = [
         _HEADER,
-        _row(amount_type="Cash Amount", instrument_subtype="CASHDEPINSTF", amount=5000.0),
+        _row(amount_type="Cash Amount", instrument_symbol="CASHDEPINSTF", amount=5000.0),
     ]
     result = parse_historical_xlsx(_build_xlsx(rows))
     assert result["2026-01"]["deposits"] == pytest.approx(5000.0)
 
 
 def test_inter_account_transfer_ignored():
-    """Cash Amount row without CASHDEPINSTF is ignored (inter-account transfer)."""
+    """Cash Amount row without CASHDEPINSTF symbol is ignored (inter-account transfer)."""
     rows = [
         _HEADER,
-        _row(amount_type="Cash Amount", instrument_subtype="TRANSFER", amount=5000.0),
+        _row(amount_type="Cash Amount", instrument_symbol="TRANSFER", amount=5000.0),
     ]
     result = parse_historical_xlsx(_build_xlsx(rows))
     assert result["2026-01"]["deposits"] == pytest.approx(0.0)
@@ -284,7 +286,7 @@ def test_total_pnl_excludes_deposits():
         _row(amount_type="Commission", amount=-100.0),
         _row(amount_type="Corporate Actions - Cash Dividends", amount=200.0),
         _row(amount_type="Premium", uic="X", amount=-500.0),   # single leg → unrealized
-        _row(amount_type="Cash Amount", instrument_subtype="CASHDEPINSTF", amount=5000.0),
+        _row(amount_type="Cash Amount", instrument_symbol="CASHDEPINSTF", amount=5000.0),
     ]
     result = parse_historical_xlsx(_build_xlsx(rows))
     m = result["2026-01"]

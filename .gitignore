@@ -10,8 +10,13 @@ dist/
 # Firebase credentials (never commit these)
 backend/firebase_config.json
 
-# Ticker cache (auto-regenerated)
-backend/data/tickers_cache.json
+# Cache data (auto-regenerated at runtime)
+backend/data/
+
+# Scratch / one-off files
+backend/scratch.py
+backend/gen_comparison.py
+backend/=0.0.9
 
 # Node
 frontend/node_modules/
