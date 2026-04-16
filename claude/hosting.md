@@ -23,7 +23,7 @@
 | Service | URL |
 |---|---|
 | Frontend (Vercel) | *(fill in after deploy)* |
-| Backend (Render) | *(fill in after deploy)* |
+| Backend (Render) | https://arkenvault-api.onrender.com |
 
 ---
 
