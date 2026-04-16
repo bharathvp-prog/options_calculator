@@ -422,6 +422,10 @@ def _yf_ticker(symbol: str) -> yf.Ticker:
     return yf.Ticker(symbol)
 
 
+import threading
+_yf_info_lock = threading.Lock()
+
+
 # ── Company description cache (60-day TTL — descriptions rarely change) ───────
 import json as _json
 from pathlib import Path as _Path
@@ -452,14 +456,14 @@ def get_stock(ticker: str):
 
     t = _yf_ticker(clean)
 
-    # ── Parallel fetch: info, history, options ────────────────────────────────
-    from concurrent.futures import ThreadPoolExecutor
-
+    # ── Fetch info (serialised to avoid crumb race), then history+options in parallel ──
     def _fetch_info():
-        try:
-            return t.info or {}
-        except Exception:
-            return {}
+        with _yf_info_lock:
+            try:
+                return t.info or {}
+            except Exception:
+                logger.warning("yfinance .info failed for %s", clean)
+                return {}
 
     def _fetch_history():
         try:
@@ -481,11 +485,10 @@ def get_stock(ticker: str):
         except Exception:
             return [], None, None
 
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_info = ex.submit(_fetch_info)
+    info = _fetch_info()
+    with ThreadPoolExecutor(max_workers=2) as ex:
         f_history = ex.submit(_fetch_history)
         f_options = ex.submit(_fetch_options)
-        info = f_info.result()
         history_dates, history_prices = f_history.result()
         options_expiries, calls_df, puts_df = f_options.result()
 
@@ -562,7 +565,8 @@ def get_stock(ticker: str):
         (datetime.now() - datetime.fromisoformat(cache_entry["cached_at"])).days
         if "cached_at" in cache_entry else 999
     )
-    if cache_age_days < _COMPANY_CACHE_TTL_DAYS:
+    cache_has_data = any(cache_entry.get(k) for k in ["description", "employees", "website", "country"])
+    if cache_age_days < _COMPANY_CACHE_TTL_DAYS and cache_has_data:
         description = cache_entry.get("description")
         employees = cache_entry.get("employees")
         website = cache_entry.get("website")
@@ -572,12 +576,13 @@ def get_stock(ticker: str):
         employees = info.get("fullTimeEmployees") or None
         website = info.get("website") or None
         country = info.get("country") or None
-        company_cache[clean] = {
-            "description": description, "employees": employees,
-            "website": website, "country": country,
-            "cached_at": datetime.now().isoformat(),
-        }
-        _save_company_cache(company_cache)
+        if any([description, employees, website, country]):
+            company_cache[clean] = {
+                "description": description, "employees": employees,
+                "website": website, "country": country,
+                "cached_at": datetime.now().isoformat(),
+            }
+            _save_company_cache(company_cache)
 
     return {
         "ticker": clean,
