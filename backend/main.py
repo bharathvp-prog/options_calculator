@@ -461,8 +461,8 @@ def get_stock(ticker: str):
         with _yf_info_lock:
             try:
                 return t.info or {}
-            except Exception:
-                logger.warning("yfinance .info failed for %s", clean)
+            except Exception as e:
+                logger.warning("yfinance .info failed for %s: %s", clean, e)
                 return {}
 
     def _fetch_history():
@@ -497,12 +497,18 @@ def get_stock(ticker: str):
     market_cap = None
     fifty_two_week_high = None
     fifty_two_week_low = None
+    fi_volume = None
+    fi_avg_volume = None
+    fi_previous_close = None
     try:
         fi = t.fast_info
         current_price = _safe_float(getattr(fi, "last_price", None))
         market_cap = _safe_float(getattr(fi, "market_cap", None))
         fifty_two_week_high = _safe_float(getattr(fi, "year_high", None) or getattr(fi, "fifty_two_week_high", None))
         fifty_two_week_low = _safe_float(getattr(fi, "year_low", None) or getattr(fi, "fifty_two_week_low", None))
+        fi_volume = _safe_float(getattr(fi, "last_volume", None))
+        fi_avg_volume = _safe_float(getattr(fi, "three_month_average_volume", None))
+        fi_previous_close = _safe_float(getattr(fi, "previous_close", None))
     except Exception:
         pass
 
@@ -512,9 +518,9 @@ def get_stock(ticker: str):
     industry = info.get("industry") or None
     pe_ratio = _safe_float(info.get("trailingPE"))
     forward_pe = _safe_float(info.get("forwardPE"))
-    previous_close = _safe_float(info.get("previousClose"))
-    avg_volume = _safe_float(info.get("averageVolume"))
-    volume = _safe_float(info.get("volume"))
+    previous_close = _safe_float(info.get("previousClose")) or fi_previous_close
+    avg_volume = _safe_float(info.get("averageVolume")) or fi_avg_volume
+    volume = _safe_float(info.get("volume")) or fi_volume
     if current_price is None:
         current_price = _safe_float(info.get("currentPrice") or info.get("regularMarketPrice"))
     if fifty_two_week_high is None:
