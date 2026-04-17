@@ -482,7 +482,8 @@ def get_stock(ticker: str):
             resp = sb.table("screener_tickers").select(
                 "name,long_name,pe_ratio,forward_pe,market_cap,sector,industry,"
                 "description,country,website,employees,previous_close,"
-                "volume_today,avg_volume_30d,week_52_high,week_52_low,refreshed_at"
+                "volume_today,avg_volume_30d,week_52_high,week_52_low,"
+                "options_expiries,refreshed_at"
             ).eq("ticker", clean).single().execute()
             row = resp.data or {}
             if row.get("refreshed_at"):
@@ -504,18 +505,24 @@ def get_stock(ticker: str):
 
     info = {} if screener else _fetch_info_live()
 
-    # ── 3. History + options chain — always live ──────────────────────────────
-    def _fetch_options():
+    # ── 3. Options expiries — screener first, live fallback ───────────────────
+    screener_expiries = screener.get("options_expiries") if screener else None
+    if screener_expiries is not None:
+        options_expiries = screener_expiries
+    else:
         try:
-            expiries = list(t.options)
-            if expiries:
-                chain = t.option_chain(expiries[0])
-                return expiries, chain.calls, chain.puts
-            return [], None, None
+            options_expiries = list(t.options)
         except Exception:
-            return [], None, None
+            options_expiries = []
 
-    options_expiries, calls_df, puts_df = _fetch_options()
+    # Fetch nearest-expiry chain for IV summary (live — needed fresh)
+    calls_df = puts_df = None
+    if options_expiries:
+        try:
+            chain = t.option_chain(options_expiries[0])
+            calls_df, puts_df = chain.calls, chain.puts
+        except Exception:
+            pass
 
     # ── 4. Current price via fast_info (lightweight endpoint) ────────────────
     current_price = None

@@ -399,7 +399,7 @@ def _fetch_options_signals(ticker: str, client) -> dict | None:
         t = yf.Ticker(ticker)
         expiries = t.options
         if not expiries:
-            return {"ticker": ticker, "has_options": False, "phase3_ok": True}
+            return {"ticker": ticker, "has_options": False, "options_expiries": [], "phase3_ok": True}
 
         # Use the nearest 2 expiries for put/call ratio; nearest for IV
         expiry = expiries[0]
@@ -472,18 +472,19 @@ def _fetch_options_signals(ticker: str, client) -> dict | None:
                 atm_vega  = g["atm_vega"]
 
         return {
-            "ticker":           ticker,
-            "has_options":      True,
-            "iv_current":       iv_current,
-            "iv_52w_high":      iv_high,
-            "iv_52w_low":       iv_low,
-            "iv_rank":          iv_rank,
-            "put_call_ratio":   put_call,
-            "atm_theta":        atm_theta,
-            "atm_gamma":        atm_gamma,
-            "atm_vega":         atm_vega,
-            "expected_move_1m": expected_move_1m,
-            "phase3_ok":        True,
+            "ticker":            ticker,
+            "has_options":       True,
+            "options_expiries":  list(expiries),
+            "iv_current":        iv_current,
+            "iv_52w_high":       iv_high,
+            "iv_52w_low":        iv_low,
+            "iv_rank":           iv_rank,
+            "put_call_ratio":    put_call,
+            "atm_theta":         atm_theta,
+            "atm_gamma":         atm_gamma,
+            "atm_vega":          atm_vega,
+            "expected_move_1m":  expected_move_1m,
+            "phase3_ok":         True,
         }
     except Exception as e:
         logger.debug("Phase 3 %s: %s", ticker, e)

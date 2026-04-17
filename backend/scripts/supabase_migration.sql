@@ -93,12 +93,13 @@ CREATE INDEX IF NOT EXISTS idx_st_expected_move ON screener_tickers (expected_mo
 
 -- ── Stock page info columns (added for Supabase-first stock lookup) ──────────
 -- Populated by Phase 2 of the nightly refresh so get_stock() can avoid live .info calls.
-ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS long_name      TEXT;
-ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS description    TEXT;
-ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS country        TEXT;
-ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS website        TEXT;
-ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS employees      INTEGER;
-ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS previous_close NUMERIC(12,4);
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS long_name        TEXT;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS description      TEXT;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS country          TEXT;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS website          TEXT;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS employees        INTEGER;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS previous_close   NUMERIC(12,4);
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS options_expiries JSONB;  -- ["2025-05-16","2025-06-20",...]
 
 
 -- ── 2. user_screener_presets ─────────────────────────────────
