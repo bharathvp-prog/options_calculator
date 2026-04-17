@@ -505,16 +505,6 @@ def get_stock(ticker: str):
     info = {} if screener else _fetch_info_live()
 
     # ── 3. History + options chain — always live ──────────────────────────────
-    def _fetch_history():
-        try:
-            df = t.history(period="1y").dropna(subset=["Close"])
-            return (
-                [d.strftime("%Y-%m-%d") for d in df.index],
-                [round(float(v), 4) for v in df["Close"]],
-            )
-        except Exception:
-            return [], []
-
     def _fetch_options():
         try:
             expiries = list(t.options)
@@ -525,11 +515,7 @@ def get_stock(ticker: str):
         except Exception:
             return [], None, None
 
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f_history = ex.submit(_fetch_history)
-        f_options = ex.submit(_fetch_options)
-        history_dates, history_prices = f_history.result()
-        options_expiries, calls_df, puts_df = f_options.result()
+    options_expiries, calls_df, puts_df = _fetch_options()
 
     # ── 4. Current price via fast_info (lightweight endpoint) ────────────────
     current_price = None
@@ -613,10 +599,6 @@ def get_stock(ticker: str):
     if current_price is None:
         current_price = _safe_float(info.get("currentPrice") or info.get("regularMarketPrice"))
 
-    # Fallback price from history
-    if current_price is None and history_prices:
-        current_price = history_prices[-1]
-
     if current_price is None:
         raise HTTPException(status_code=404, detail=f"No data found for ticker: {clean}")
 
@@ -664,8 +646,6 @@ def get_stock(ticker: str):
         "fifty_two_week_low": fifty_two_week_low,
         "volume": volume,
         "avg_volume": avg_volume,
-        "history_dates": history_dates,
-        "history_prices": history_prices,
         "options_expiries": options_expiries,
         "nearest_expiry_iv": nearest_expiry_iv,
         "description": description,
@@ -673,6 +653,21 @@ def get_stock(ticker: str):
         "website": website,
         "country": country,
     }
+
+
+@app.get("/api/stock/{ticker}/history")
+def get_stock_history(ticker: str):
+    clean = ticker.upper().strip()
+    if not re.match(r'^[A-Z0-9.\-]{1,10}$', clean):
+        raise HTTPException(status_code=400, detail=f"Invalid ticker format: {ticker}")
+    try:
+        df = _yf_ticker(clean).history(period="1y").dropna(subset=["Close"])
+        return {
+            "dates":  [d.strftime("%Y-%m-%d") for d in df.index],
+            "prices": [round(float(v), 4) for v in df["Close"]],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/stock/{ticker}/news")

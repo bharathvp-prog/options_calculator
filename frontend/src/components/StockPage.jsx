@@ -200,7 +200,49 @@ function KeyStatsCard({ data }) {
   )
 }
 
-function PriceChartCard({ dates, prices }) {
+function PriceChartSkeleton() {
+  return (
+    <div className="flex-1 min-h-[180px] relative overflow-hidden rounded-xl">
+      {/* Ghost chart line */}
+      <svg className="w-full h-full" viewBox="0 0 400 180" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="skelFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgba(99,102,241,0.12)" />
+            <stop offset="100%" stopColor="rgba(99,102,241,0)" />
+          </linearGradient>
+          <linearGradient id="skelShimmer" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="rgba(255,255,255,0)" />
+            <stop offset="50%" stopColor="rgba(255,255,255,0.06)" />
+            <stop offset="100%" stopColor="rgba(255,255,255,0)" />
+            <animateTransform attributeName="gradientTransform" type="translate" from="-1 0" to="2 0" dur="1.6s" repeatCount="indefinite" />
+          </linearGradient>
+        </defs>
+        {/* Filled area */}
+        <path
+          d="M0 140 C 60 125, 100 95, 150 100 S 220 70, 270 75 S 340 45, 400 52 L 400 180 L 0 180 Z"
+          fill="url(#skelFill)"
+        />
+        {/* Chart line */}
+        <path
+          d="M0 140 C 60 125, 100 95, 150 100 S 220 70, 270 75 S 340 45, 400 52"
+          fill="none"
+          stroke="rgba(99,102,241,0.25)"
+          strokeWidth="1.5"
+        />
+        {/* Shimmer overlay */}
+        <rect x="0" y="0" width="400" height="180" fill="url(#skelShimmer)" />
+      </svg>
+      {/* Y-axis skeleton bars */}
+      <div className="absolute left-0 top-0 h-full flex flex-col justify-between py-2 pl-1 gap-0">
+        {[...Array(4)].map((_, i) => (
+          <div key={i} className="h-2 w-8 bg-white/[0.04] rounded animate-pulse" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PriceChartCard({ dates, prices, loading }) {
   const [range, setRange] = useState("1Y")
   const { dates: d, prices: p } = sliceHistory(dates, prices, range)
   const isUp = p.length >= 2 && p[p.length - 1] >= p[0]
@@ -260,16 +302,19 @@ function PriceChartCard({ dates, prices }) {
             <button
               key={r}
               onClick={() => setRange(r)}
-              className={`px-2 py-0.5 text-xs rounded-lg transition ${range === r ? "bg-indigo-600 text-white" : "text-gray-500 hover:text-gray-300 hover:bg-white/[0.05]"}`}
+              disabled={loading}
+              className={`px-2 py-0.5 text-xs rounded-lg transition ${range === r ? "bg-indigo-600 text-white" : "text-gray-500 hover:text-gray-300 hover:bg-white/[0.05]"} disabled:opacity-40`}
             >
               {r}
             </button>
           ))}
         </div>
       </div>
-      {d.length > 1
-        ? <ReactECharts option={option} style={{ height: "100%", minHeight: 180 }} opts={{ renderer: "svg" }} className="flex-1" />
-        : <div className="flex-1 flex items-center justify-center text-sm text-gray-600">No chart data</div>
+      {loading
+        ? <PriceChartSkeleton />
+        : d.length > 1
+          ? <ReactECharts option={option} style={{ height: "100%", minHeight: 180 }} opts={{ renderer: "svg" }} className="flex-1" />
+          : <div className="flex-1 flex items-center justify-center text-sm text-gray-600">No chart data</div>
       }
     </div>
   )
@@ -645,6 +690,9 @@ export default function StockPage() {
   const [news, setNews] = useState(null) // null = loading, [] = loaded empty
   const [newsError, setNewsError] = useState(false)
   const [stockPlan, setStockPlan] = useState(null)
+  const [historyDates, setHistoryDates] = useState([])
+  const [historyPrices, setHistoryPrices] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   // Fetch portfolio once to check for matching position
   useEffect(() => {
@@ -670,6 +718,9 @@ export default function StockPage() {
     setNews(null)
     setNewsError(false)
     setStockPlan(null)
+    setHistoryDates([])
+    setHistoryPrices([])
+    setHistoryLoading(true)
 
     const clean = ticker.toUpperCase()
 
@@ -683,6 +734,12 @@ export default function StockPage() {
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
+
+    fetch(`/api/stock/${clean}/history`)
+      .then(r => r.json())
+      .then(d => { setHistoryDates(d.dates || []); setHistoryPrices(d.prices || []) })
+      .catch(() => {})
+      .finally(() => setHistoryLoading(false))
 
     getToken().then(token => {
       fetch("/api/plans", { headers: token ? { Authorization: `Bearer ${token}` } : {} })
@@ -794,7 +851,7 @@ export default function StockPage() {
 
           {/* Chart + Key Stats side by side */}
           <div className="grid grid-cols-2 gap-4">
-            <PriceChartCard dates={stockData.history_dates} prices={stockData.history_prices} />
+            <PriceChartCard dates={historyDates} prices={historyPrices} loading={historyLoading} />
             <KeyStatsCard data={stockData} />
           </div>
 
