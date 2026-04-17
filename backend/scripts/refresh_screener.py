@@ -229,6 +229,7 @@ def run_phase1(tickers: list[str], client) -> list[str]:
 
 _PHASE2_INFO_KEYS = {
     "shortName":                       "name",
+    "longName":                        "long_name",
     "trailingPE":                      "pe_ratio",
     "forwardPE":                       "forward_pe",
     "priceToBook":                     "price_to_book",
@@ -242,7 +243,14 @@ _PHASE2_INFO_KEYS = {
     "sector":                          "sector",
     "industry":                        "industry",
     "marketCap":                       "market_cap",
+    "longBusinessSummary":             "description",
+    "country":                         "country",
+    "website":                         "website",
+    "fullTimeEmployees":               "employees",
+    "previousClose":                   "previous_close",
 }
+
+_PHASE2_STRING_FIELDS = {"name", "long_name", "sector", "industry", "description", "country", "website"}
 
 
 def _fetch_fundamentals(ticker: str) -> dict | None:
@@ -253,12 +261,12 @@ def _fetch_fundamentals(ticker: str) -> dict | None:
         row: dict = {"ticker": ticker, "phase2_ok": True}
         for src, dst in _PHASE2_INFO_KEYS.items():
             val = info.get(src)
-            if dst == "name":
-                row[dst] = val
-            elif dst in ("sector", "industry"):
-                row[dst] = val if isinstance(val, str) else None
+            if dst in _PHASE2_STRING_FIELDS:
+                row[dst] = val if isinstance(val, str) and val else None
             elif dst == "market_cap":
                 row[dst] = int(val) if val and math.isfinite(float(val)) else None
+            elif dst == "employees":
+                row[dst] = int(val) if val else None
             else:
                 row[dst] = _safe(val)
         return row

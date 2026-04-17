@@ -91,6 +91,15 @@ CREATE INDEX IF NOT EXISTS idx_st_atm_theta     ON screener_tickers (atm_theta);
 CREATE INDEX IF NOT EXISTS idx_st_atm_gamma     ON screener_tickers (atm_gamma);
 CREATE INDEX IF NOT EXISTS idx_st_expected_move ON screener_tickers (expected_move_1m);
 
+-- ── Stock page info columns (added for Supabase-first stock lookup) ──────────
+-- Populated by Phase 2 of the nightly refresh so get_stock() can avoid live .info calls.
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS long_name      TEXT;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS description    TEXT;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS country        TEXT;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS website        TEXT;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS employees      INTEGER;
+ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS previous_close NUMERIC(12,4);
+
 
 -- ── 2. user_screener_presets ─────────────────────────────────
 -- Per-user saved screener filter configurations.

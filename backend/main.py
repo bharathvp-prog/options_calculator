@@ -426,10 +426,28 @@ import threading
 _yf_info_lock = threading.Lock()
 
 
-# ── Company description cache (60-day TTL — descriptions rarely change) ───────
+# ── yfinance .info cache (4-hour TTL — avoids Yahoo rate limits) ──────────────
 import json as _json
 from pathlib import Path as _Path
+_INFO_CACHE_FILE = _Path(__file__).parent / "data" / "info_cache.json"
+_INFO_CACHE_TTL_HOURS = 4
 
+
+def _load_info_cache() -> dict:
+    if not _INFO_CACHE_FILE.exists():
+        return {}
+    try:
+        return _json.loads(_INFO_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_info_cache(cache: dict):
+    _INFO_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _INFO_CACHE_FILE.write_text(_json.dumps(cache, indent=2), encoding="utf-8")
+
+
+# ── Company description cache (60-day TTL — descriptions rarely change) ───────
 _COMPANY_CACHE_FILE = _Path(__file__).parent / "data" / "company_cache.json"
 _COMPANY_CACHE_TTL_DAYS = 60
 
@@ -456,8 +474,27 @@ def get_stock(ticker: str):
 
     t = _yf_ticker(clean)
 
-    # ── Fetch info (serialised to avoid crumb race), then history+options in parallel ──
-    def _fetch_info():
+    # ── 1. Supabase screener lookup (nightly data — no Yahoo rate limits) ─────
+    screener = {}
+    try:
+        sb = get_supabase()
+        if sb:
+            resp = sb.table("screener_tickers").select(
+                "name,long_name,pe_ratio,forward_pe,market_cap,sector,industry,"
+                "description,country,website,employees,previous_close,"
+                "volume_today,avg_volume_30d,week_52_high,week_52_low,refreshed_at"
+            ).eq("ticker", clean).single().execute()
+            row = resp.data or {}
+            if row.get("refreshed_at"):
+                age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(row["refreshed_at"])).total_seconds() / 3600
+                if age_h <= 26:
+                    screener = row
+                    logger.info("Screener cache hit for %s (age %.1fh)", clean, age_h)
+    except Exception as e:
+        logger.debug("Screener lookup failed for %s: %s", clean, e)
+
+    # ── 2. Live .info — only when screener data is absent/stale ──────────────
+    def _fetch_info_live():
         with _yf_info_lock:
             try:
                 return t.info or {}
@@ -465,6 +502,9 @@ def get_stock(ticker: str):
                 logger.warning("yfinance .info failed for %s: %s", clean, e)
                 return {}
 
+    info = {} if screener else _fetch_info_live()
+
+    # ── 3. History + options chain — always live ──────────────────────────────
     def _fetch_history():
         try:
             df = t.history(period="1y").dropna(subset=["Close"])
@@ -485,14 +525,13 @@ def get_stock(ticker: str):
         except Exception:
             return [], None, None
 
-    info = _fetch_info()
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_history = ex.submit(_fetch_history)
         f_options = ex.submit(_fetch_options)
         history_dates, history_prices = f_history.result()
         options_expiries, calls_df, puts_df = f_options.result()
 
-    # ── Price ─────────────────────────────────────────────────────────────────
+    # ── 4. Current price via fast_info (lightweight endpoint) ────────────────
     current_price = None
     market_cap = None
     fifty_two_week_high = None
@@ -512,21 +551,67 @@ def get_stock(ticker: str):
     except Exception:
         pass
 
-    # ── Fundamentals (from parallel info fetch) ───────────────────────────────
-    name = info.get("longName") or info.get("shortName") or clean
-    sector = info.get("sector") or None
-    industry = info.get("industry") or None
-    pe_ratio = _safe_float(info.get("trailingPE"))
-    forward_pe = _safe_float(info.get("forwardPE"))
-    previous_close = _safe_float(info.get("previousClose")) or fi_previous_close
-    avg_volume = _safe_float(info.get("averageVolume")) or fi_avg_volume
-    volume = _safe_float(info.get("volume")) or fi_volume
+    # ── 5. Assemble fundamentals (screener → fast_info → live info fallback) ─
+    if screener:
+        name = screener.get("long_name") or screener.get("name") or clean
+        sector = screener.get("sector")
+        industry = screener.get("industry")
+        pe_ratio = _safe_float(screener.get("pe_ratio"))
+        forward_pe = _safe_float(screener.get("forward_pe"))
+        previous_close = _safe_float(screener.get("previous_close")) or fi_previous_close
+        avg_volume = _safe_float(screener.get("avg_volume_30d")) or fi_avg_volume
+        volume = fi_volume or _safe_float(screener.get("volume_today"))
+        if market_cap is None:
+            market_cap = _safe_float(screener.get("market_cap"))
+        if fifty_two_week_high is None:
+            fifty_two_week_high = _safe_float(screener.get("week_52_high"))
+        if fifty_two_week_low is None:
+            fifty_two_week_low = _safe_float(screener.get("week_52_low"))
+        description = screener.get("description")
+        employees = screener.get("employees")
+        website = screener.get("website")
+        country = screener.get("country")
+    else:
+        name = info.get("longName") or info.get("shortName") or clean
+        sector = info.get("sector") or None
+        industry = info.get("industry") or None
+        pe_ratio = _safe_float(info.get("trailingPE"))
+        forward_pe = _safe_float(info.get("forwardPE"))
+        previous_close = _safe_float(info.get("previousClose")) or fi_previous_close
+        avg_volume = _safe_float(info.get("averageVolume")) or fi_avg_volume
+        volume = _safe_float(info.get("volume")) or fi_volume
+        if fifty_two_week_high is None:
+            fifty_two_week_high = _safe_float(info.get("fiftyTwoWeekHigh"))
+        if fifty_two_week_low is None:
+            fifty_two_week_low = _safe_float(info.get("fiftyTwoWeekLow"))
+        # Company static (non-screener tickers): use local 60-day cache
+        company_cache = _load_company_cache()
+        cache_entry = company_cache.get(clean, {})
+        cache_age_days = (
+            (datetime.now() - datetime.fromisoformat(cache_entry["cached_at"])).days
+            if "cached_at" in cache_entry else 999
+        )
+        cache_has_data = any(cache_entry.get(k) for k in ["description", "employees", "website", "country"])
+        if cache_age_days < _COMPANY_CACHE_TTL_DAYS and cache_has_data:
+            description = cache_entry.get("description")
+            employees = cache_entry.get("employees")
+            website = cache_entry.get("website")
+            country = cache_entry.get("country")
+        else:
+            description = info.get("longBusinessSummary") or None
+            employees = info.get("fullTimeEmployees") or None
+            website = info.get("website") or None
+            country = info.get("country") or None
+            if any([description, employees, website, country]):
+                company_cache[clean] = {
+                    "description": description, "employees": employees,
+                    "website": website, "country": country,
+                    "cached_at": datetime.now().isoformat(),
+                }
+                _save_company_cache(company_cache)
+
     if current_price is None:
         current_price = _safe_float(info.get("currentPrice") or info.get("regularMarketPrice"))
-    if fifty_two_week_high is None:
-        fifty_two_week_high = _safe_float(info.get("fiftyTwoWeekHigh"))
-    if fifty_two_week_low is None:
-        fifty_two_week_low = _safe_float(info.get("fiftyTwoWeekLow"))
 
     # Fallback price from history
     if current_price is None and history_prices:
@@ -541,7 +626,7 @@ def get_stock(ticker: str):
         change = round(current_price - previous_close, 4)
         change_pct = round(change / previous_close * 100, 4)
 
-    # ── Options IV (from parallel options fetch) ──────────────────────────────
+    # ── Options IV (from live options fetch) ──────────────────────────────────
     nearest_expiry_iv = None
     if options_expiries and calls_df is not None and puts_df is not None:
         try:
@@ -563,32 +648,6 @@ def get_stock(ticker: str):
                 }
         except Exception:
             pass
-
-    # ── Company static info (cached 60 days) ─────────────────────────────────
-    company_cache = _load_company_cache()
-    cache_entry = company_cache.get(clean, {})
-    cache_age_days = (
-        (datetime.now() - datetime.fromisoformat(cache_entry["cached_at"])).days
-        if "cached_at" in cache_entry else 999
-    )
-    cache_has_data = any(cache_entry.get(k) for k in ["description", "employees", "website", "country"])
-    if cache_age_days < _COMPANY_CACHE_TTL_DAYS and cache_has_data:
-        description = cache_entry.get("description")
-        employees = cache_entry.get("employees")
-        website = cache_entry.get("website")
-        country = cache_entry.get("country")
-    else:
-        description = info.get("longBusinessSummary") or None
-        employees = info.get("fullTimeEmployees") or None
-        website = info.get("website") or None
-        country = info.get("country") or None
-        if any([description, employees, website, country]):
-            company_cache[clean] = {
-                "description": description, "employees": employees,
-                "website": website, "country": country,
-                "cached_at": datetime.now().isoformat(),
-            }
-            _save_company_cache(company_cache)
 
     return {
         "ticker": clean,
