@@ -101,6 +101,34 @@ ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS employees        INTEGER;
 ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS previous_close   NUMERIC(12,4);
 ALTER TABLE screener_tickers ADD COLUMN IF NOT EXISTS options_expiries JSONB;  -- ["2025-05-16","2025-06-20",...]
 
+-- ── 1b. ticker_financials ────────────────────────────────────
+-- Normalized income-statement history cached for stock research and planning.
+
+CREATE TABLE IF NOT EXISTS ticker_financials (
+  ticker             TEXT NOT NULL,
+  period_type        TEXT NOT NULL,
+  period_end         DATE NOT NULL,
+  fiscal_year        INTEGER NOT NULL,
+  fiscal_quarter     INTEGER,
+  revenue            NUMERIC(18,4),
+  gross_profit       NUMERIC(18,4),
+  op_expenses        NUMERIC(18,4),
+  operating_income   NUMERIC(18,4),
+  net_income         NUMERIC(18,4),
+  diluted_eps        NUMERIC(18,4),
+  shares_outstanding BIGINT,
+  current_price      NUMERIC(12,4),
+  year_end_price     NUMERIC(12,4),
+  fetched_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  source             TEXT NOT NULL DEFAULT 'yfinance',
+  PRIMARY KEY (ticker, period_type, period_end),
+  CONSTRAINT chk_tf_period_type CHECK (period_type IN ('annual', 'quarterly')),
+  CONSTRAINT chk_tf_quarter CHECK (fiscal_quarter IS NULL OR fiscal_quarter BETWEEN 1 AND 4)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tf_ticker_period ON ticker_financials (ticker, period_type);
+CREATE INDEX IF NOT EXISTS idx_tf_fetched_at    ON ticker_financials (fetched_at);
+
 
 -- ── 2. user_screener_presets ─────────────────────────────────
 -- Per-user saved screener filter configurations.

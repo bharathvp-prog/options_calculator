@@ -11,6 +11,18 @@ async function getToken() {
   }
 }
 
+async function apiFetch(path, opts = {}) {
+  const token = await getToken()
+  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(path, { ...opts, headers })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `${res.status} ${res.statusText}`)
+  }
+  return res.json()
+}
+
 function fmtMarketCap(n) {
   if (n == null) return "—"
   if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`
@@ -80,6 +92,214 @@ function CompanyAboutCard({ data }) {
         <p className="text-sm text-gray-600">No description available.</p>
       )}
     </div>
+  )
+}
+
+function fmtFinancialValue(value, isEps = false) {
+  if (value == null) return "—"
+  return isEps ? Number(value).toFixed(2) : Number(value).toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  })
+}
+
+function fmtPctValue(value) {
+  if (value == null) return "—"
+  return `${Number(value).toFixed(1)}%`
+}
+
+function buildGrowthSeries(values, lag) {
+  return (values || []).map((value, idx, arr) => {
+    const base = arr[idx - lag]
+    if (value == null || base == null || base === 0) return null
+    return ((value / base) - 1) * 100
+  })
+}
+
+function buildMarginSeries(numerator, denominator) {
+  return (numerator || []).map((value, idx) => {
+    const rev = denominator?.[idx]
+    if (value == null || rev == null || rev === 0) return null
+    return (value / rev) * 100
+  })
+}
+
+function FinancialsTable({ periods, rows, compact = false, dense = false }) {
+  return (
+    <table className={`w-full border-collapse ${dense ? "text-[11px] table-fixed" : "text-xs"} ${compact ? "min-w-0" : dense ? "min-w-[1080px]" : "min-w-[1320px]"}`}>
+      <thead>
+        <tr className="border-b border-white/[0.04]">
+          <th className={`text-left text-[11px] text-gray-500 font-medium sticky top-0 left-0 z-30 bg-[#0a0a0f] ${dense ? "px-2 py-2 min-w-[7.5rem] w-[7.5rem]" : compact ? "px-4 py-3 min-w-[9rem]" : "px-4 py-3 min-w-[9.5rem]"}`}>
+            Metric
+          </th>
+          {periods.map(period => (
+            <th key={period} className={`text-right text-[11px] text-gray-600 font-medium whitespace-nowrap sticky top-0 z-20 bg-[#0a0a0f] ${dense ? "px-1.5 py-2" : "px-3 py-3"}`}>
+              {period}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-white/[0.03]">
+        {rows.map(row => (
+          <tr key={row.key} className={`${row.bg || "hover:bg-white/[0.02]"} transition`}>
+            <td className={`text-white font-medium sticky left-0 z-10 ${dense ? "px-2 py-2 min-w-[7.5rem] w-[7.5rem]" : compact ? "px-4 py-3 min-w-[9rem]" : "px-4 py-3 min-w-[9.5rem]"} ${row.bg || "bg-[#0a0a0f]"}`}>
+              {row.label}
+            </td>
+            {(row.values || []).map((value, idx) => (
+              <td key={`${row.key}-${idx}`} className={`text-right text-gray-300 whitespace-nowrap ${dense ? "px-1.5 py-2" : "px-3 py-3"} ${row.bg || ""}`}>
+                {row.pct ? fmtPctValue(value) : fmtFinancialValue(value, row.eps)}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+function QuarterlyFinancialsModalTable({ periods, rows }) {
+  return (
+    <table className="w-full table-fixed border-collapse text-[11px]">
+      <thead>
+        <tr className="border-b border-white/[0.04]">
+          <th className="px-3 py-2 text-left text-[11px] text-gray-500 font-medium sticky top-0 bg-[#0a0a0f] z-20 w-[6.5rem]">
+            Quarter
+          </th>
+          {rows.map(row => (
+            <th
+              key={row.key}
+              className={`px-2 py-2 text-right text-[11px] text-gray-600 font-medium sticky top-0 bg-[#0a0a0f] z-10 ${row.bg || ""}`}
+            >
+              {row.label}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-white/[0.03]">
+        {periods.map((period, periodIdx) => (
+          <tr key={period} className="hover:bg-white/[0.02] transition">
+            <td className="px-3 py-2 text-white font-medium whitespace-nowrap">
+              {period}
+            </td>
+            {rows.map(row => (
+              <td
+                key={`${period}-${row.key}`}
+                className={`px-2 py-2 text-right text-gray-300 whitespace-nowrap ${row.bg || ""}`}
+              >
+                {row.pct
+                  ? fmtPctValue(row.values?.[periodIdx])
+                  : fmtFinancialValue(row.values?.[periodIdx], row.eps)}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+function FinancialsCard({ financials, loading, error }) {
+  const [periodType, setPeriodType] = useState("annual")
+  const [showQuarterlyModal, setShowQuarterlyModal] = useState(false)
+  const dataset = financials?.[periodType]
+  const allPeriods = dataset?.periods || []
+  const lag = periodType === "quarterly" ? 4 : 1
+  const revenueGrowth = buildGrowthSeries(dataset?.revenue || [], lag)
+  const grossProfitMargin = buildMarginSeries(dataset?.gross_profit || [], dataset?.revenue || [])
+  const operatingIncomeMargin = buildMarginSeries(dataset?.operating_income || [], dataset?.revenue || [])
+  const epsGrowth = buildGrowthSeries(dataset?.diluted_eps || [], lag)
+  const allRows = [
+    { key: "revenue", label: "Revenue ($M)", values: dataset?.revenue || [] },
+    { key: "revenue_growth", label: "Revenue Growth YoY", pct: true, values: revenueGrowth, bg: "bg-sky-500/[0.05]" },
+    { key: "gross_profit", label: "Gross Profit ($M)", values: dataset?.gross_profit || [] },
+    { key: "gross_profit_margin", label: "GP %", pct: true, values: grossProfitMargin, bg: "bg-emerald-500/[0.05]" },
+    { key: "op_expenses", label: "Op. Expenses ($M)", values: dataset?.op_expenses || [] },
+    { key: "operating_income", label: "Operating Income ($M)", values: dataset?.operating_income || [] },
+    { key: "operating_income_margin", label: "OI %", pct: true, values: operatingIncomeMargin, bg: "bg-amber-500/[0.05]" },
+    { key: "net_income", label: "Net Income ($M)", values: dataset?.net_income || [] },
+    { key: "diluted_eps", label: "EPS (diluted)", eps: true, values: dataset?.diluted_eps || [] },
+    { key: "eps_growth", label: "EPS Growth YoY", pct: true, values: epsGrowth, bg: "bg-fuchsia-500/[0.05]" },
+  ]
+  const inlinePeriods = periodType === "quarterly" ? allPeriods.slice(-4) : allPeriods
+  const inlineRows = allRows.map(row => ({
+    ...row,
+    values: (row.values || []).slice(-(periodType === "quarterly" ? 4 : row.values.length)),
+  }))
+
+  return (
+    <>
+      <div className="bg-white/[0.02] border border-white/8 rounded-2xl overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Financials</h3>
+            <p className="text-[11px] text-gray-600 mt-1">Last 4 years and past 16 quarters.</p>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            {periodType === "quarterly" && allPeriods.length > 4 && (
+              <button
+                onClick={() => setShowQuarterlyModal(true)}
+                className="text-xs text-indigo-400 hover:text-indigo-300 transition"
+              >
+                See more quarters
+              </button>
+            )}
+            <div className="flex items-center bg-white/[0.03] border border-white/10 rounded-lg p-0.5">
+              {["annual", "quarterly"].map(type => (
+                <button
+                  key={type}
+                  onClick={() => setPeriodType(type)}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition ${
+                    periodType === type
+                      ? "bg-indigo-600 text-white"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  {type === "annual" ? "Annual" : "Quarterly"}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="p-5 flex flex-col gap-3">
+            {[1, 2, 3, 4, 5, 6].map(i => (
+              <div key={i} className="h-8 bg-white/[0.04] rounded animate-pulse" />
+            ))}
+          </div>
+        ) : error ? (
+          <p className="text-sm text-gray-600 p-5">Could not load financials.</p>
+        ) : allPeriods.length === 0 ? (
+          <p className="text-sm text-gray-600 p-5">No financial statement data available.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <FinancialsTable periods={inlinePeriods} rows={inlineRows} compact />
+          </div>
+        )}
+      </div>
+
+      {showQuarterlyModal && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-7xl max-h-[88vh] bg-[#0d0d12] border border-white/10 rounded-3xl overflow-hidden shadow-2xl">
+            <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Quarterly Financials</h3>
+                <p className="text-xs text-gray-500 mt-1">Past 16 quarters with YoY growth and margin trends.</p>
+              </div>
+              <button
+                onClick={() => setShowQuarterlyModal(false)}
+                className="px-3 py-1.5 text-xs rounded-lg bg-white/[0.04] border border-white/10 text-gray-300 hover:text-white hover:bg-white/[0.08] transition"
+              >
+                Close
+              </button>
+            </div>
+            <div className="overflow-auto max-h-[calc(88vh-4.5rem)]">
+              <QuarterlyFinancialsModalTable periods={allPeriods} rows={allRows} />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -684,6 +904,9 @@ export default function StockPage() {
   const { ticker } = useParams()
   const navigate = useNavigate()
   const [stockData, setStockData] = useState(null)
+  const [financials, setFinancials] = useState(null)
+  const [financialsLoading, setFinancialsLoading] = useState(false)
+  const [financialsError, setFinancialsError] = useState(false)
   const [portfolioPositions, setPortfolioPositions] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
@@ -710,10 +933,22 @@ export default function StockPage() {
 
   // Fetch stock data when ticker changes
   useEffect(() => {
-    if (!ticker) { setStockData(null); setError(""); setNews(null); setNewsError(false); return }
+    if (!ticker) {
+      setStockData(null)
+      setFinancials(null)
+      setFinancialsLoading(false)
+      setFinancialsError(false)
+      setError("")
+      setNews(null)
+      setNewsError(false)
+      return
+    }
     setLoading(true)
     setError("")
     setStockData(null)
+    setFinancials(null)
+    setFinancialsLoading(true)
+    setFinancialsError(false)
     setPortfolioPositions([])
     setNews(null)
     setNewsError(false)
@@ -740,6 +975,11 @@ export default function StockPage() {
       .then(d => { setHistoryDates(d.dates || []); setHistoryPrices(d.prices || []) })
       .catch(() => {})
       .finally(() => setHistoryLoading(false))
+
+    apiFetch(`/api/financials/${clean}`)
+      .then(data => setFinancials(data))
+      .catch(() => { setFinancials(null); setFinancialsError(true) })
+      .finally(() => setFinancialsLoading(false))
 
     getToken().then(token => {
       fetch("/api/plans", { headers: token ? { Authorization: `Bearer ${token}` } : {} })
@@ -857,6 +1097,9 @@ export default function StockPage() {
 
           {/* Company about — full width */}
           <CompanyAboutCard data={stockData} />
+
+          {/* Financials — full width */}
+          <FinancialsCard financials={financials} loading={financialsLoading} error={financialsError} />
 
           {/* Options chain — full width */}
           <OptionsChainPanel

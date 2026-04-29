@@ -19,8 +19,9 @@ from services.strategy import identify_strategy
 from services.payoff import OptionLeg, compute_payoff_table
 from services.portfolio import parse_saxo_xlsx, symbol_to_yf_ticker, get_price_history
 from services.historical import parse_historical_xlsx
+from services.option_greeks import bs_greeks as shared_bs_greeks, compute_option_metrics, years_to_expiry
 from services.validation import spread_validity_error
-from services.supabase_client import get_supabase
+from services.supabase_client import get_supabase, get_supabase_service
 from services.financials import get_financial_history
 import uuid as _uuid
 
@@ -137,6 +138,7 @@ class CyclingPosition(BaseModel):
     expiry: str
     strike: float
     premium: float
+    delta: float | None = None
     entry_date: str
     units: int
     locked: bool = False
@@ -717,37 +719,7 @@ def get_stock_news(ticker: str):
 
 
 def _bs_greeks(S: float, K: float, T: float, r: float, sigma: float, option_type: str) -> dict:
-    """Black-Scholes Greeks. T in years, sigma as decimal (e.g. 0.30)."""
-    import math
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
-        return {"delta": None, "gamma": None, "theta": None, "vega": None}
-    try:
-        sqrt_T = math.sqrt(T)
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
-        d2 = d1 - sigma * sqrt_T
-        # Standard normal CDF via erf
-        def _N(x):
-            return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
-        # Standard normal PDF
-        def _n(x):
-            return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
-        nd1 = _n(d1)
-        if option_type == "call":
-            delta = _N(d1)
-            theta = (-(S * nd1 * sigma) / (2 * sqrt_T) - r * K * math.exp(-r * T) * _N(d2)) / 365
-        else:
-            delta = _N(d1) - 1
-            theta = (-(S * nd1 * sigma) / (2 * sqrt_T) + r * K * math.exp(-r * T) * _N(-d2)) / 365
-        gamma = nd1 / (S * sigma * sqrt_T)
-        vega = S * nd1 * sqrt_T / 100  # per 1% move in IV
-        return {
-            "delta": round(delta, 4),
-            "gamma": round(gamma, 4),
-            "theta": round(theta, 4),
-            "vega": round(vega, 4),
-        }
-    except Exception:
-        return {"delta": None, "gamma": None, "theta": None, "vega": None}
+    return shared_bs_greeks(S, K, T, r, sigma, option_type)
 
 
 @app.get("/api/stock/{ticker}/chain")
@@ -766,25 +738,32 @@ def get_option_chain_for_expiry(ticker: str, expiry: str):
         puts_df = chain.puts.copy()
 
         # DTE in years for Black-Scholes
-        today = date.today()
-        try:
-            exp_date = date.fromisoformat(expiry)
-            T = max((exp_date - today).days, 0) / 365.0
-        except Exception:
-            T = 0.0
+        T = years_to_expiry(expiry)
         R = 0.045  # risk-free rate (~current US 3-month T-bill)
 
         def _serialize_chain(df, option_type: str):
             if df.empty:
                 return []
+            def sv(v, cast=float):
+                try:
+                    val = cast(v)
+                    return None if (val != val) else val
+                except Exception:
+                    return None
+
+            raw_rows = [row.to_dict() for _, row in df.iterrows()]
+            selected_rows = raw_rows
+            if current_price:
+                strikes = sorted(set(
+                    sv(row.get("strike")) for row in raw_rows if sv(row.get("strike")) is not None
+                ))
+                if strikes:
+                    atm_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - current_price))
+                    selected = set(strikes[max(0, atm_idx - 4): atm_idx + 4])
+                    selected_rows = [row for row in raw_rows if sv(row.get("strike")) in selected]
+
             rows = []
-            for _, row in df.iterrows():
-                def sv(v, cast=float):
-                    try:
-                        val = cast(v)
-                        return None if (val != val) else val
-                    except Exception:
-                        return None
+            for row in selected_rows:
                 strike = sv(row.get("strike"))
                 bid = sv(row.get("bid"))
                 ask = sv(row.get("ask"))
@@ -793,25 +772,22 @@ def get_option_chain_for_expiry(ticker: str, expiry: str):
                 if ask == 0.0:
                     ask = None
                 mid = round((bid + ask) / 2, 4) if bid is not None and ask is not None else None
-                iv = sv(row.get("impliedVolatility"))
-                if iv is not None and iv < 0.001:
-                    iv = None
-                greeks = (
-                    _bs_greeks(current_price, strike, T, R, iv, option_type)
-                    if current_price and strike and iv and T > 0
-                    else {"delta": None, "gamma": None, "theta": None, "vega": None}
-                )
+                metrics = compute_option_metrics(current_price, strike, T, R, option_type, row, raw_rows)
                 rows.append({
                     "strike": strike,
                     "bid": bid,
                     "ask": ask,
                     "mid": mid,
                     "last": sv(row.get("lastPrice")),
-                    "iv": iv,
-                    "delta": greeks["delta"],
-                    "gamma": greeks["gamma"],
-                    "theta": greeks["theta"],
-                    "vega": greeks["vega"],
+                    "iv": metrics["iv"],
+                    "iv_raw": metrics["iv_raw"],
+                    "iv_source": metrics["iv_source"],
+                    "price_source": metrics["price_source"],
+                    "delta_status": metrics["delta_status"],
+                    "delta": metrics["delta"],
+                    "gamma": metrics["gamma"],
+                    "theta": metrics["theta"],
+                    "vega": metrics["vega"],
                     "volume": sv(row.get("volume"), int),
                     "open_interest": sv(row.get("openInterest"), int),
                     "in_the_money": bool(row.get("inTheMoney", False)),
@@ -820,15 +796,6 @@ def get_option_chain_for_expiry(ticker: str, expiry: str):
 
         all_calls = _serialize_chain(calls_df, "call")
         all_puts = _serialize_chain(puts_df, "put")
-
-        # Pick 8 strikes closest to current price
-        if current_price and all_calls:
-            strikes = sorted(set(r["strike"] for r in all_calls if r["strike"] is not None))
-            if strikes:
-                atm_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - current_price))
-                selected = set(strikes[max(0, atm_idx - 4): atm_idx + 4])
-                all_calls = [r for r in all_calls if r["strike"] in selected]
-                all_puts = [r for r in all_puts if r["strike"] in selected]
 
         return {
             "expiry": expiry,
@@ -1208,6 +1175,25 @@ def get_contract(
         last = last if last and last > 0 else None
         mid = round((bid + ask) / 2, 4) if bid and ask else None
         premium = mid if mid is not None else last
+        T = years_to_expiry(expiry)
+        R = 0.045
+
+        current_price = None
+        try:
+            fi = yf.Ticker(ticker.upper()).fast_info
+            current_price = safe(getattr(fi, "last_price", None))
+        except Exception:
+            current_price = None
+
+        metrics = compute_option_metrics(
+            current_price,
+            strike,
+            T,
+            R,
+            option_type,
+            row.to_dict(),
+            df.to_dict("records"),
+        )
 
         return {
             "bid": bid,
@@ -1216,7 +1202,15 @@ def get_contract(
             "mid": mid,
             "premium": premium,
             "premium_source": "mid" if mid is not None else "ltp",
-            "impliedVolatility": safe(row["impliedVolatility"]),
+            "impliedVolatility": metrics["iv"],
+            "impliedVolatilityRaw": metrics["iv_raw"],
+            "iv_source": metrics["iv_source"],
+            "price_source": metrics["price_source"],
+            "delta_status": metrics["delta_status"],
+            "delta": metrics["delta"],
+            "gamma": metrics["gamma"],
+            "theta": metrics["theta"],
+            "vega": metrics["vega"],
             "volume": safe(row["volume"], int) or 0,
             "openInterest": safe(row["openInterest"], int) or 0,
         }
@@ -1723,7 +1717,12 @@ def get_financials(ticker: str, authorization: str = Header(default=None)):
     if not re.match(r'^[A-Z0-9.\-]{1,10}$', clean):
         raise HTTPException(status_code=400, detail="Invalid ticker")
     try:
-        data = get_financial_history(clean)
+        read_client = get_supabase()
+        try:
+            write_client = get_supabase_service()
+        except Exception:
+            write_client = None
+        data = get_financial_history(clean, read_client=read_client, write_client=write_client)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

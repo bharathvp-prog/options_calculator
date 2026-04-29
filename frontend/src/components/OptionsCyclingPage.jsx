@@ -242,6 +242,7 @@ function AddForm({ optionType, onAdd, onCancel, initialTicker = "" }) {
       expiry,
       strike: parseFloat(strike),
       premium: contractData.premium,
+      delta: contractData.delta,
       entry_date: entryDate,
       units: parseInt(units),
       locked: false,
@@ -347,6 +348,7 @@ function AddForm({ optionType, onAdd, onCancel, initialTicker = "" }) {
             <div><span className="text-gray-600">Earnings </span>${fmt(computed.earnings, 0)}</div>
             <div><span className="text-gray-600">Return </span>{fmt(computed.return_pct, 2)}%</div>
             <div><span className="text-gray-600">ARR </span>{fmt(computed.arr_pct, 2)}%</div>
+            <div><span className="text-gray-600">Delta </span>{fmt(contractData?.delta, 4)}</div>
           </div>
         )}
 

@@ -29,9 +29,15 @@ from datetime import datetime, timezone, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
 import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
+from services.option_greeks import bs_greeks as shared_bs_greeks, compute_option_metrics, years_to_expiry
+from services.financials import ensure_financials_table_available, cached_financials_need_refresh, read_cached_financial_rows, refresh_financial_cache_for_ticker
 
 # Suppress yfinance noise
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -51,6 +57,7 @@ logger = logging.getLogger("refresh")
 BATCH_SIZE_PHASE1 = 500     # tickers per yf.download() call
 WORKERS_PHASE2    = 12      # concurrent .info fetches
 WORKERS_PHASE3    = 8       # concurrent options chain fetches
+WORKERS_FINANCIALS = 6      # concurrent financial statement refreshes
 DELAY_PHASE2      = 0.15    # seconds between Phase 2 worker starts
 UPSERT_BATCH      = 150     # rows per Supabase upsert call
 
@@ -317,32 +324,7 @@ def run_phase2(tickers: list[str], client) -> list[str]:
 # Local copy of _bs_greeks from main.py — kept here to avoid import coupling.
 
 def _bs_greeks(S: float, K: float, T: float, r: float, sigma: float, option_type: str) -> dict:
-    """Black-Scholes Greeks. T in years, sigma as decimal (e.g. 0.30)."""
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
-        return {"delta": None, "gamma": None, "theta": None, "vega": None}
-    try:
-        sqrt_T = math.sqrt(T)
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
-        d2 = d1 - sigma * sqrt_T
-        def _N(x): return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
-        def _n(x): return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
-        nd1 = _n(d1)
-        if option_type == "call":
-            delta = _N(d1)
-            theta = (-(S * nd1 * sigma) / (2 * sqrt_T) - r * K * math.exp(-r * T) * _N(d2)) / 365
-        else:
-            delta = _N(d1) - 1
-            theta = (-(S * nd1 * sigma) / (2 * sqrt_T) + r * K * math.exp(-r * T) * _N(-d2)) / 365
-        gamma = nd1 / (S * sigma * sqrt_T)
-        vega  = S * nd1 * sqrt_T / 100  # per 1% move in IV
-        return {
-            "delta": round(delta, 4),
-            "gamma": round(gamma, 6),
-            "theta": round(theta, 4),
-            "vega":  round(vega,  4),
-        }
-    except Exception:
-        return {"delta": None, "gamma": None, "theta": None, "vega": None}
+    return shared_bs_greeks(S, K, T, r, sigma, option_type)
 
 
 def _atm_greeks_from_chain(calls_df, current_price: float, dte: int, iv_current: float) -> dict:
@@ -362,6 +344,27 @@ def _atm_greeks_from_chain(calls_df, current_price: float, dte: int, iv_current:
         }
     except Exception:
         return {"atm_theta": None, "atm_gamma": None, "atm_vega": None}
+
+
+def _resolved_iv_mean(df, current_price: float, expiry: str, option_type: str, strikes: list[float] | None = None) -> float | None:
+    if current_price <= 0 or df.empty:
+        return None
+    if strikes is not None:
+        df = df[df["strike"].isin(strikes)]
+    if df.empty:
+        return None
+
+    raw_rows = df.to_dict("records")
+    T = years_to_expiry(expiry)
+    ivs = []
+    for row in raw_rows:
+        strike = _safe(row.get("strike"))
+        if not strike:
+            continue
+        metrics = compute_option_metrics(current_price, strike, T, 0.045, option_type, row, raw_rows)
+        if metrics["iv"] is not None:
+            ivs.append(metrics["iv"])
+    return _safe(sum(ivs) / len(ivs)) if ivs else None
 
 
 # ── Phase 3: Options Signals ──────────────────────────────────────────────────
@@ -422,14 +425,17 @@ def _fetch_options_signals(ticker: str, client) -> dict | None:
                 pass
         put_call = _safe(total_put_oi / total_call_oi) if total_call_oi > 0 else None
 
+        try:
+            last_price = _safe(t.fast_info.last_price)
+        except Exception:
+            last_price = None
+
         # IV: average ATM calls (±2 strikes around midpoint)
         try:
             all_strikes = sorted(calls["strike"].tolist())
             mid_idx = len(all_strikes) // 2
             atm_strikes = all_strikes[max(0, mid_idx - 2): mid_idx + 3]
-            atm_calls = calls[calls["strike"].isin(atm_strikes)]
-            iv_vals = atm_calls["impliedVolatility"].dropna()
-            iv_current = _safe(iv_vals.mean())
+            iv_current = _resolved_iv_mean(calls, last_price or 0, expiry, "call", atm_strikes)
         except Exception:
             iv_current = None
 
@@ -443,12 +449,6 @@ def _fetch_options_signals(ticker: str, client) -> dict | None:
         if iv_current and iv_current > 0:
             # Expected 1-sigma move over 30 calendar days
             expected_move_1m = _safe(iv_current * math.sqrt(30 / 252))
-
-            # Get current price
-            try:
-                last_price = _safe(t.fast_info.last_price)
-            except Exception:
-                last_price = None
 
             if last_price and last_price > 0:
                 # Find best expiry for greeks: prefer 10–60 DTE
@@ -519,8 +519,7 @@ def _fetch_greeks_only(ticker: str, current_price: float | None) -> dict | None:
             all_strikes = sorted(calls["strike"].tolist())
             mid_idx = len(all_strikes) // 2
             atm_s = all_strikes[max(0, mid_idx - 2): mid_idx + 3]
-            iv_vals = calls[calls["strike"].isin(atm_s)]["impliedVolatility"].dropna()
-            iv_current = _safe(iv_vals.mean())
+            iv_current = _resolved_iv_mean(calls, current_price, expiries[0], "call", atm_s)
         except Exception:
             iv_current = None
 
@@ -642,6 +641,45 @@ def run_phase3(tickers: list[str], client) -> int:
 
     logger.info("Phase 3 complete: %d tickers processed", successful)
     return successful
+
+
+def _refresh_financials_if_needed(ticker: str, client) -> tuple[str, bool]:
+    try:
+        cached_rows = read_cached_financial_rows(client, ticker)
+        if not cached_financials_need_refresh(cached_rows):
+            return ticker, False
+        refresh_financial_cache_for_ticker(ticker, client)
+        return ticker, True
+    except Exception as e:
+        logger.warning("Phase 4 financials skipped for %s: %s", ticker, e)
+        return ticker, False
+
+
+def run_phase4_financials(tickers: list[str], client) -> int:
+    """
+    Refresh cached income-statement financials for the given ticker set.
+    Only missing/stale tickers are fetched from Yahoo.
+    """
+    logger.info("=== Phase 4: Financials Cache (%d tickers, workers=%d) ===", len(tickers), WORKERS_FINANCIALS)
+    ensure_financials_table_available(client)
+    refreshed = 0
+
+    with ThreadPoolExecutor(max_workers=WORKERS_FINANCIALS) as pool:
+        futures = {pool.submit(_refresh_financials_if_needed, ticker, client): ticker for ticker in tickers}
+        for n, future in enumerate(as_completed(futures), 1):
+            ticker = futures[future]
+            try:
+                _, changed = future.result()
+                if changed:
+                    refreshed += 1
+            except Exception as e:
+                logger.warning("Phase 4 financials skipped for %s: %s", ticker, e)
+
+            if n % 100 == 0:
+                logger.info("Phase 4 progress: %d/%d", n, len(tickers))
+
+    logger.info("Phase 4 complete: %d/%d tickers refreshed", refreshed, len(tickers))
+    return refreshed
 
 
 # ── Identify options-eligible tickers ────────────────────────────────────────
@@ -797,10 +835,14 @@ def main(test: bool = False, large_cap: bool = False, greeks_only: bool = False)
     eligible = p1_tickers if (test or large_cap) else get_options_eligible(client, p1_tickers)
     run_phase3(eligible, client)
 
+    # Phase 4 — financials cache (large-cap universe only to match stock research coverage)
+    financial_tickers = LARGE_CAP_TICKERS if not test else TEST_TICKERS
+    run_phase4_financials(financial_tickers, client)
+
     elapsed = time.time() - start
     logger.info(
-        "Refresh complete in %.1f minutes. Phase1=%d tickers, options=%d tickers.",
-        elapsed / 60, len(p1_tickers), len(eligible),
+        "Refresh complete in %.1f minutes. Phase1=%d tickers, options=%d tickers, financials=%d tickers.",
+        elapsed / 60, len(p1_tickers), len(eligible), len(financial_tickers),
     )
 
 

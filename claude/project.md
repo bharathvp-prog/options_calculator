@@ -1,316 +1,229 @@
-# ArkenVault — Project Guide for Claude
+# ArkenVault - Project Guide
 
-## What this project is
-ArkenVault is an AI-assisted options strategy tool. Users describe a market view in plain English (e.g. "I'm confident AMD will grow to 250 but no more than 300 by June 2028"), the app identifies the right strategy, then scans live Yahoo Finance data to find the cheapest matching contracts. Results are compared across expiry horizons (1mo / 3mo / 6mo / 1yr / 2yr / latest) with cost-per-day and payoff analytics.
+This file is the repo's internal engineering guide. For the broad project overview, local setup, and deployment summary, see the root [README.md](../README.md).
 
-The app also includes a **Portfolio** feature: users upload a Saxo Bank `.xlsx` positions export, which is parsed and stored in Firestore. The portfolio page shows grouped positions (options/stocks), historical 14-day trend tables with day-over-day color coding, a 2W change summary column, and a 14-day inline SVG chart.
+## Product areas
 
-An **Options Cycling** page analyses uncovered stock positions to identify covered call writing opportunities.
+ArkenVault currently includes six major workflows:
+
+1. Options strategy builder
+2. Portfolio tracking
+3. Options wheeling
+4. Historical performance tracking
+5. Stock screener and stock research
+6. Scenario planning
 
 ## Stack
 
 ### Frontend
+
 - React 19 + Vite 8
-- Tailwind CSS v4 (via `@tailwindcss/vite` plugin — no `tailwind.config.js` needed)
+- Tailwind CSS v4 via `@tailwindcss/vite`
 - React Router v7
-- Firebase Auth (email/password + Google)
-- `motion/react` for animations
-- Path alias: `@` → `frontend/src/`
+- Firebase Auth
+- `motion`
+- `echarts` + `echarts-for-react`
+- Path alias `@` -> `frontend/src/`
 
 ### Backend
-- Python 3.13 + FastAPI
-- `yfinance` for live option chain data + portfolio price history
-- Firebase Admin SDK for token verification + Firestore for portfolio persistence
-- `uvicorn` dev server
-- `pytest` for testing
 
-## Folder structure
-```
-options_calculator/
-├── CLAUDE.md                          # imports claude/project.md
-├── claude/
-│   └── project.md                     # this file
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── ui/                    # reusable UI primitives
-│   │   │   ├── LandingPage.jsx
-│   │   │   ├── LoginPage.jsx
-│   │   │   ├── AppShell.jsx           # sidebar layout + theme toggle
-│   │   │   ├── DashboardPage.jsx      # portfolio widget + sparklines
-│   │   │   ├── OptionsPage.jsx        # main strategy builder page
-│   │   │   ├── PortfolioPage.jsx      # portfolio upload, table, trend, chart
-│   │   │   ├── OptionsCyclingPage.jsx # uncovered calls / covered call cycling analysis
-│   │   │   ├── CashPage.jsx           # cash/uninvested balance tracking
-│   │   │   ├── ViewInput.jsx          # NL market view input (+ voice)
-│   │   │   ├── StrategyProposal.jsx   # proposed strategy + qty controls
-│   │   │   ├── ComparisonView.jsx     # multi-horizon results table
-│   │   │   ├── PayoffCalculator.jsx   # P&L grid (modal)
-│   │   │   ├── LegForm.jsx            # manual leg builder form
-│   │   │   ├── LegList.jsx            # manual leg list + search
-│   │   │   ├── ResultsTable.jsx       # manual mode results
-│   │   │   └── ProtectedRoute.jsx
-│   │   ├── hooks/
-│   │   │   └── useSpeechRecognition.js
-│   │   ├── lib/
-│   │   │   ├── utils.js               # cn() helper
-│   │   │   └── theme.js               # getStoredTheme / applyTheme / toggleTheme
-│   │   ├── firebase.js
-│   │   ├── index.css                  # Tailwind + html.light theme overrides
-│   │   └── main.jsx
-│   └── vite.config.js
-└── backend/
-    ├── main.py                        # FastAPI app + all routes
-    ├── pytest.ini                     # test config (testpaths = tests)
-    ├── services/
-    │   ├── options.py                 # yfinance helpers + horizon picker
-    │   ├── strategy.py                # rule-based NL parser
-    │   ├── payoff.py                  # pure payoff math (OptionLeg, compute_pnl_at, compute_payoff_table)
-    │   ├── tickers.py                 # ticker autocomplete
-    │   └── portfolio.py               # Saxo xlsx parser + yf ticker mapping + price history
-    └── tests/
-        ├── test_strategy_identification.py   # 52 tests: parser + strategy routing
-        ├── test_payoff.py                    # 55 tests: every strategy at exact values
-        └── test_portfolio_parser.py          # symbol mapping + xlsx parsing tests
-```
+- FastAPI
+- yfinance
+- pandas
+- Firebase Admin SDK
+- Firestore
+- Supabase
+- pytest
 
-## User flow (Smart mode)
-1. User types (or speaks) a market view → `POST /api/strategy/identify`
-2. Rule-based parser returns strategy name, description, proposed legs with strike hints
-3. User adjusts leg quantities (1–10×) to express conviction (ratio spreads)
-4. Clicks "Compare across time horizons" → `POST /api/strategy/compare`
-5. Comparison table shows 1mo / 3mo / 6mo / 1yr / 2yr / latest-available rows:
-   - DTE (color-coded: green >90d, amber >30d, red <30d)
-   - Net cost ($), $/day (value metric), max profit, max ROI, breakeven(s)
-   - "Best value" badge on lowest $/day row
-6. Click a row → leg detail panel expands inline
-7. Click "View P/L" → `PayoffCalculator` modal with P&L bar chart at 21 stock prices
+## Current frontend routes
 
-**Manual mode** (toggle in header): `LegForm` + `LegList` → `POST /api/search` → `ResultsTable`
+- `/`
+- `/login`
+- `/app/options`
+- `/app/portfolio`
+- `/app/wheeling`
+- `/app/cash`
+- `/app/performance`
+- `/app/stock`
+- `/app/stock/:ticker`
+- `/app/screener`
+- `/app/plans`
+- `/app/plans/:ticker`
 
-## User flow (Portfolio)
-1. User uploads a Saxo Bank positions `.xlsx` → `POST /api/portfolio/upload`
-2. Backend parses the file, maps symbols to yfinance tickers, persists to Firestore
-   - Each position gets a `has_options` field (bool): always `True` for Stock Options; for Stocks, set via `bool(yf.Ticker(yf_ticker).options)` (deduplicated — one call per unique ticker)
-   - 14-day price history computed via `get_price_history` and cached in Firestore at upload time
-3. `GET /api/portfolio` loads positions + cached price history on subsequent visits — single round-trip, no separate price fetch
-4. `PortfolioPage` groups positions: Listed options → Stocks
-5. Trend view: 14-day price history embedded in `GET /api/portfolio` response (`price_dates` / `price_data`) — pre-computed during upload/refresh, no extra API call on page load
-   - Options: scaled by ratio of historic underlying price to `pos.underlying_price`
-   - Stocks: scaled by ratio of historic close to last yfinance close (anchors to Saxo market value)
-   - Day-over-day color coding (emerald = up, rose = down, gray = first day)
-   - "2W Chg (SGD)" summary column (emerald if ≥0, rose if <0)
-6. 14-day inline SVG area chart shows total portfolio value over time
-7. "Refresh prices" → `POST /api/portfolio/refresh` re-fetches yfinance prices, re-computes `has_options`, re-fetches 14-day price history, and returns all updated data in a single response
+## Current frontend pages
 
-## API endpoints
-| Method | Path | Description |
-|--------|------|-------------|
-| GET  | `/api/tickers/search?q=app` | Ticker autocomplete |
-| GET  | `/api/options/expiries?ticker=AAPL` | Available expiry dates |
-| POST | `/api/strategy/identify` | NL view → strategy proposal |
-| POST | `/api/strategy/compare` | Strategy legs → multi-horizon results + payoff |
-| POST | `/api/search` | Manual mode: cheapest contracts per leg |
-| POST | `/api/portfolio/upload` | Upload Saxo xlsx, parse + persist positions (includes has_options + 14-day price cache) |
-| GET  | `/api/portfolio` | Fetch stored positions + cached 14-day price history for current user |
-| POST | `/api/portfolio/refresh` | Re-fetch yfinance prices + has_options + 14-day price history, re-persist |
+- `LandingPage.jsx`
+- `LoginPage.jsx`
+- `DashboardPage.jsx`
+- `OptionsPage.jsx`
+- `PortfolioPage.jsx`
+- `OptionsCyclingPage.jsx`
+- `CashPage.jsx`
+- `HistoricalPerformancePage.jsx`
+- `StockPage.jsx`
+- `ScreenerPage.jsx`
+- `PlansPage.jsx`
+- `PlanningPage.jsx`
 
-### POST /api/strategy/identify
-```json
-// Request
-{ "view": "I'm confident AMD will grow to 250 but no more than 300 by June 2028" }
+## Current backend services
 
-// Response
-{
-  "strategy_name": "Bull Call Spread",
-  "description": "...",
-  "ticker": "AMD",
-  "same_expiry": true,
-  "legs": [
-    { "option_type": "call", "side": "buy",  "strike_hint": 300, "expiry_from": "2025-03-31", "expiry_to": "2028-06-30" },
-    { "option_type": "call", "side": "sell", "strike_hint": 400, "expiry_from": "2025-03-31", "expiry_to": "2028-06-30" }
-  ]
-}
-```
+- `options.py`: option-chain fetch helpers and expiry selection
+- `option_greeks.py`: shared Black-Scholes pricing, Greeks, and IV fallback resolution
+- `strategy.py`: natural-language strategy identification
+- `payoff.py`: pure payoff math
+- `portfolio.py`: Saxo parser, ticker mapping, and price history
+- `historical.py`: historical workbook parsing
+- `financials.py`: financial history
+- `tickers.py`: ticker search and SEC cache management
+- `validation.py`: strategy validation helpers
+- `supabase_client.py`: Supabase bootstrap
 
-### POST /api/strategy/compare
-```json
-// Request
-{
-  "ticker": "AMD",
-  "legs": [
-    { "option_type": "call", "side": "buy",  "strike_hint": 300, "qty": 1 },
-    { "option_type": "call", "side": "sell", "strike_hint": 400, "qty": 1 }
-  ],
-  "sort_by": "ask"
-}
+## Financials architecture
 
-// Response — horizons[] each contains:
-{
-  "label": "1 year", "expiry": "2026-03-20", "dte": 354,
-  "legs": [...],          // actual contracts found
-  "net_debit": 5.00,
-  "net_cost_dollars": 500.0,
-  "cost_per_day": 1.41,
-  "max_profit": 9500.0,
-  "max_loss": -500.0,
-  "max_roi": 1900.0,
-  "breakevens": [305.0],
-  "payoff_at": { "150.0": -500, "305.0": 0, "400.0": 9500, ... },
-  "best_value": true
-}
-```
+This is another important recent behavior change.
 
-### POST /api/search (manual mode)
-```json
-// Request
-{
-  "legs": [{ "ticker": "AAPL", "expiry_from": "2025-06-01", "expiry_to": "2025-09-30",
-             "strike_min": 180, "strike_max": 200, "option_type": "call", "side": "buy" }],
-  "sort_by": "ask",
-  "same_expiry": false
-}
-// Response: legs[], net_debit, total_ask, total_sell_bid, total_mid, forced_expiry
-```
+The app no longer treats `/api/financials/{ticker}` as a pure live Yahoo fetch. It now uses a DB-backed cache in Supabase:
 
-### GET /api/portfolio
-```json
-// Response
-{
-  "positions": [...],           // all positions; Stock positions include has_options: true/false
-  "uploaded_at": "2026-04-08T12:00:00+00:00",
-  "price_dates": ["2026-03-24", "2026-03-25", ...],   // 14 trading days
-  "price_data": { "AMD": [145.2, 147.8, ...], "AAPL": [null, 198.5, ...] }
-}
-// null = no data for that date (weekend/holiday gap)
-// price_dates / price_data are [] / {} for portfolios not yet refreshed since caching was added
-```
+- table: `ticker_financials`
+- source for live refresh: `yfinance`
+- cache service: `backend/services/financials.py`
+- refresh integration: `backend/scripts/refresh_screener.py`
 
-## Strategies identified by the rule-based parser
-| Strategy | Trigger condition |
-|---|---|
-| Bull Call Spread | Bullish + 2 prices, OR bullish + 1 price + cap keyword |
-| Long Call | Bullish + 1 price (no cap), or bullish + no price |
-| Bear Put Spread | Bearish + 2 prices |
-| Long Put | Bearish + 1 price, or bearish + no price |
-| Long Strangle | Volatile sentiment + 2 prices |
-| Long Straddle | Volatile sentiment + 0 or 1 price |
-| Iron Condor | Neutral/flat sentiment |
+### Runtime behavior
 
-## Portfolio parsing (`services/portfolio.py`)
+- Read cached annual and quarterly rows from Supabase first.
+- If the cache is missing or stale, fetch live annual + quarterly income statements and write them back to Supabase.
+- Return nested annual/quarterly datasets plus legacy top-level annual fields used by `PlanningPage.jsx`.
 
-**`parse_saxo_xlsx(file_bytes: bytes) -> list[dict]`**
-- Opens xlsx via `io.BytesIO + zipfile.ZipFile`, parses `xl/sharedStrings.xml` + `xl/worksheets/sheet1.xml` using `xml.etree.ElementTree` — no openpyxl needed
-- Skips row 1 (headers) and section-header rows (instrument cell contains `"("`)
-- Key fields extracted: `instrument`, `l_s`, `quantity`, `open_price`, `current_price`, `pnl_sgd`, `market_value_sgd`, `asset_type`, `symbol`, `expiry`, `call_put`, `strike`, `underlying_price`, `currency`
+### Current stock-page window
 
-**`symbol_to_yf_ticker(symbol, asset_type) -> str | None`**
-- Options (`"Stock Option"`): `symbol.split("/")[0].replace("_US", "")` → e.g. `"AMD/21F28C200:xcbf"` → `"AMD"`
-- Stocks: split on `:`, exchange suffix mapping:
-  - `xhkg` → strip leading zeros, zfill(4), add `.HK`
-  - `xses` → add `.SI`
-  - otherwise → base symbol as-is
+- Annual view: latest `4` years
+- Quarterly view: latest `16` quarters
+- Quarterly inline card: latest `4` quarters
+- Quarterly modal: full `16` quarters
 
-**`get_price_history(tickers, days=7) -> tuple[list[str], dict[str, list[float | None]]]`**
-- Returns `(dates, prices)`: `dates` = list of N trading day strings, `prices` = `{ticker: [close, ...]}` with `None` for missing days
-- Fetches period `days + 7` to cover weekends/holidays, then takes last `days` business days
+### Refresh-job behavior
 
-**`has_options` field** — not set by the parser; added by `portfolio_upload` and `portfolio_refresh`:
-- `"Stock Option"` positions → `has_options = True`
-- `"Stock"` positions → `bool(yf.Ticker(yf_ticker).options)`, deduplicated per unique ticker
-- Used by `OptionsCyclingPage` to filter uncovered call candidates without any extra API calls on page load
+- Phase 4 in `refresh_screener.py` refreshes financials for the large-cap universe.
+- A preflight check verifies `ticker_financials` exists before the phase starts.
+- If the table is missing, the phase fails fast with a clear cache error.
+- If the table exists, per-ticker financial failures are logged and skipped.
 
-## Ticker autocomplete (`services/tickers.py`)
+## API surface
 
-**Remote source:** `https://www.sec.gov/files/company_tickers.json` — SEC EDGAR company tickers, ~13,000 US-listed companies, free, JSON. Requires `User-Agent` header or requests may be blocked.
+### Strategy
 
-**Cache:** `backend/data/tickers_cache.json`, 7-day TTL. Delete to force a fresh fetch on next restart.
+- `POST /api/strategy/identify`
+- `POST /api/strategy/compare`
+- `POST /api/search`
 
-**Fallback:** ~100 hardcoded popular tickers used if remote fetch fails and no cache exists.
+### Market data and stock research
 
-**`load_tickers()`**: Called once at startup. Priority: valid cache → SEC EDGAR remote → fallback list.
+- `GET /api/tickers/search`
+- `GET /api/options/expiries`
+- `GET /api/options/strikes`
+- `GET /api/options/contract`
+- `GET /api/stock/{ticker}`
+- `GET /api/stock/{ticker}/history`
+- `GET /api/stock/{ticker}/news`
+- `GET /api/stock/{ticker}/chain`
 
-**`search_tickers(query, limit=10)`**: Symbol prefix match first, then name substring match.
+### Portfolio and wheeling
 
-## Historic MV scaling (PortfolioPage)
+- `POST /api/portfolio/upload`
+- `GET /api/portfolio`
+- `GET /api/portfolio/prices`
+- `POST /api/portfolio/refresh`
+- `GET /api/portfolio/cash`
+- `GET /api/cycling`
+- `POST /api/cycling`
+- `GET /api/fx/usdsgd`
 
-`scaledMvForDate(pos, di, dates, prices)`:
-- **Stocks**: `ref = priceSeries[last]` (last yfinance close); historic MV = `market_value_sgd × (historicPrice / ref)` — anchors last column exactly to Saxo value
-- **Options**: `ref = pos.underlying_price` (Saxo's underlying stock price); historic MV = `market_value_sgd × (historicUnderlyingPrice / ref)` — varies with underlying stock, NOT option premium
+### Historical performance
 
-## Payoff math (`services/payoff.py`)
-`compute_pnl_at(legs, stock_price, net_cost_dollars)` — pure function, no I/O.
-`compute_payoff_table(legs, net_cost_dollars, price_range, num_points)` — returns `payoff_at`, `max_profit`, `max_loss`, `max_roi`, `breakevens`.
+- `POST /api/historical/upload`
+- `GET /api/historical`
+- `POST /api/historical/lock`
 
-Key implementation details:
-- Strikes are always included as sample points (prevents interpolation error at payoff kinks)
-- Breakeven crossing uses strict `v1 < 0 <= v2` to prevent double-counting exact zeros
-- Credit strategies (Iron Condor): `net_cost_dollars < 0`; ROI basis = `abs(max_loss)`
+### Screener
 
-## Testing — REQUIRED on every build
+- `GET /api/screener/fields`
+- `GET /api/screener/init`
+- `GET /api/screener/status`
+- `POST /api/screener/run`
+- `GET /api/screener/presets`
+- `POST /api/screener/presets`
+- `DELETE /api/screener/presets/{preset_id}`
+
+### Planning and financials
+
+- `GET /api/financials/{ticker}`
+- `GET /api/plans/tickers`
+- `GET /api/plans`
+- `GET /api/plans/{plan_id}`
+- `POST /api/plans`
+- `DELETE /api/plans/{plan_id}`
+
+## Options Greeks and IV fallback
+
+This is an important recent behavior change.
+
+The app still computes Greeks with Black-Scholes, but it no longer blindly trusts Yahoo's `impliedVolatility` value. Shared logic now lives in `backend/services/option_greeks.py` and is used by:
+
+- `/api/options/contract`
+- `/api/stock/{ticker}/chain`
+- `backend/scripts/refresh_screener.py`
+
+### Fallback pipeline
+
+1. Accept Yahoo IV only if it is valid and consistent with the option's price.
+2. If not, infer IV from `mid` when bid/ask are usable.
+3. If `mid` is not usable, infer IV from `lastPrice`.
+4. If the row is still unusable, interpolate from nearby strikes.
+
+### Metadata now returned
+
+- `impliedVolatility`
+- `impliedVolatilityRaw`
+- `iv_source`
+- `price_source`
+- `delta_status`
+
+This is especially relevant in the wheel tab where Yahoo can return placeholder-like IV values or zero bid/ask for some strikes.
+
+## Testing guidance
+
+Run the full backend suite before committing:
+
 ```bash
 cd backend
-py -m pytest          # all tests must pass before committing
+pytest -q
 ```
 
-A git pre-commit hook enforces this: `.git/hooks/pre-commit` runs the full suite and blocks the commit on failure.
+Targeted options-greeks tests:
 
-**When adding new features:**
-- Any new strategy type → add cases to `tests/test_strategy_identification.py`
-- Any change to payoff math → add/update cases in `tests/test_payoff.py`
-- Portfolio parser changes → update `tests/test_portfolio_parser.py`
-- Tests must describe the exact scenario in the docstring and assert exact numeric values
-
-## Design system
-- **Theme:** Dark by default — base background `#0a0a0f`, primary accent `indigo-600/500`
-- **Light theme:** toggled via `html.light` class on `<html>` element; CSS overrides in `index.css`; persisted to `localStorage` under key `arkenvault-theme`; applied immediately in `main.jsx` before React renders
-- **Theme toggle:** sun/moon icon button in sidebar footer (AppShell); uses `lib/theme.js` helpers
-- **Logo:** always `fill="white"` on SVG inside indigo square — do NOT use `fill="currentColor"` (light theme CSS would override it)
-- **Cards/panels:** `bg-white/[0.02] border border-white/8 rounded-2xl`
-- **Inputs:** `bg-white/5 border border-white/10 rounded-xl text-white` with `focus:ring-indigo-500/50`
-- **Select dropdowns:** same class as inputs — `bg-white/5 border border-white/10 rounded-xl text-sm text-white px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 transition`. Do NOT add `[color-scheme:dark]` to individual selects — `color-scheme: dark` is set globally on `html` in `index.css` (overridden to `light` on `html.light`), so all native form controls render dark automatically site-wide.
-- **Primary button:** `bg-indigo-600 hover:bg-indigo-500 rounded-xl shadow-lg shadow-indigo-500/20`
-- **Call badge:** `bg-emerald-500/15 text-emerald-400 border-emerald-500/20`
-- **Put badge:** `bg-rose-500/15 text-rose-400 border-rose-500/20`
-- **Buy badge:** `bg-sky-500/15 text-sky-400 border-sky-500/20`
-- **Sell badge:** `bg-amber-500/15 text-amber-400 border-amber-500/20`
-- **Best value badge:** `bg-emerald-500/15 text-emerald-400 border-emerald-500/20`
-- **DTE colors:** green >90d · amber >30d · rose <30d
-- **Trend cell colors:** emerald = up vs prior day · rose = down · gray = first column or no data
-- **2W change column:** emerald if ≥0, rose if <0
-- **Brand name:** ArkenVault (always, everywhere)
-
-## Hosting
-See `claude/hosting.md` for the full hosting plan, env var reference, and deployment steps.
-
-**Stack:** Vercel (frontend static) + Render free tier (backend Docker)
-**URL pattern:** `https://arkenvault.vercel.app` → rewrites `/api/*` to Render backend
-**Key env vars:**
-- Backend: `FIREBASE_SERVICE_ACCOUNT_JSON`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`, `ALLOWED_ORIGINS`
-- Frontend (Vercel): all `VITE_FIREBASE_*` vars
-
-## Dev commands
 ```bash
-# Frontend
-cd frontend && npm run dev        # http://localhost:5173
-
-# Backend
-cd backend && python -m uvicorn main:app --reload   # http://localhost:8000
-
-# Tests (run before every commit)
-cd backend && py -m pytest
+cd backend
+pytest tests/test_option_greeks.py -q
 ```
 
-## Auth
-- Firebase auth is optional in dev — if `firebase_config.json` is missing, backend accepts all requests
-- Frontend reads Firebase config from `frontend/.env` (see `.env.example`)
+### When changing logic
 
-## Key conventions
-- All components are `.jsx` — this is not a TypeScript project
-- Use `@/` alias imports inside `frontend/src/`
-- New reusable UI primitives go in `frontend/src/components/ui/`
-- Keep components focused — don't add features beyond what's asked
-- Don't add comments unless logic is non-obvious
-- `payoff.py` must stay a pure module (no FastAPI/yfinance imports) so tests run fast
-- Light theme: all CSS overrides live in `index.css` under `html.light` selectors — do not add theme logic to components
-- Tailwind v4 arbitrary-value class escaping in CSS: `.bg-\[\#0a0a0f\]` (backslash-escape brackets and `#`)
+- Strategy parser changes -> update `tests/test_strategy_identification.py`
+- Payoff math changes -> update `tests/test_payoff.py`
+- Portfolio parser changes -> update `tests/test_portfolio_parser.py`
+- Historical parsing changes -> update `tests/test_historical_parser.py`
+- IV and Greek fallback changes -> update `tests/test_option_greeks.py`
+- Financials cache / response-shape changes -> update `tests/test_financials.py`
+
+## Conventions
+
+- Frontend is JSX, not TypeScript.
+- Keep `payoff.py` pure and fast to test.
+- Shared option-pricing behavior should live in `services/option_greeks.py`, not be duplicated in routes or scripts.
+- Prefer updating both `README.md` and this guide when product structure changes materially.
+
+## Related docs
+
+- Root overview: [README.md](../README.md)
+- Hosting and deployment: [hosting.md](hosting.md)
